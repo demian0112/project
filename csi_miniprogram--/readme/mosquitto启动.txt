@@ -1,0 +1,59 @@
+1. 启动 Mosquitto Broker
+
+在 Broker 所在电脑 192.168.101.48 打开第一个 CMD：
+
+cd /d C:\Mosquitto
+mosquitto.exe -c C:\Mosquitto\mosquitto_esp32.conf -v
+
+这个窗口不要关闭。
+
+2. 订阅全部 ESP32 Topic
+
+打开第二个 CMD：
+
+cd /d C:\Mosquitto
+mosquitto_sub.exe -h 192.168.101.48 -p 1883 -u esp32 -P esp32pass -t esp32s3/# -v
+
+这个会显示：
+
+esp32s3/status
+esp32s3/test
+esp32s3/control
+3. 只订阅 CSI 数据 Topic
+
+如果只想看 C 板上传的 CSI 批量数据：
+
+cd /d C:\Mosquitto
+mosquitto_sub.exe -h 192.168.101.48 -p 1883 -u esp32 -P esp32pass -t esp32s3/test -v
+4. 电脑端测试发布
+
+可选，用来测试订阅窗口是否正常：
+
+cd /d C:\Mosquitto
+mosquitto_pub.exe -h 192.168.101.48 -p 1883 -u esp32 -P esp32pass -t esp32s3/test -m "hello mqtt"
+
+如果订阅窗口收到：
+
+esp32s3/test hello mqtt
+
+说明 Broker 和订阅端正常。
+
+5. 检查 1883 端口是否监听
+netstat -ano | findstr :1883
+
+理想结果应该包含：
+
+0.0.0.0:1883    LISTENING
+6. 正确关闭 Mosquitto
+
+在 Mosquitto 启动窗口按：
+
+Ctrl + C
+
+如果不确定是否还在运行：
+
+netstat -ano | findstr :1883
+
+如果还在运行，用 PID 强制关闭：
+
+taskkill /PID 你的PID /F

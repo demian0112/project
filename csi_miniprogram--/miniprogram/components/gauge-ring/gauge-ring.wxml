@@ -1,0 +1,6 @@
+<view class="gauge-ring">
+  <canvas type="2d" id="gauge-canvas" class="gauge-canvas"></canvas>
+  <view class="gauge-center">
+    <slot></slot>
+  </view>
+</view>

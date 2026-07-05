@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <meta
+      name="description"
+      content="安守 CSI 跌倒检测系统管理员控制台"
+    >
+    <title>设备管理中心 · 安守 CSI</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/dashboard.css') }}"
+    >
+    <script
+      src="{{ url_for('static', filename='js/dashboard.js') }}"
+      defer
+    ></script>
+  </head>
+  <body class="dashboard-page">
+    <div class="admin-layout">
+      <aside class="sidebar">
+        <a
+          class="brand"
+          href="{{ url_for('site.dashboard') }}"
+          aria-label="安守 CSI 管理首页"
+        >
+          <span class="brand-mark" aria-hidden="true">
+            <span class="brand-wave"></span>
+          </span>
+          <span class="brand-copy">
+            <strong>安守 CSI</strong>
+            <small>FALL DETECTION</small>
+          </span>
+        </a>
+
+        <nav class="side-nav" aria-label="管理模块">
+          <a class="is-active" href="#overview">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" rx="2"/>
+              <rect x="14" y="3" width="7" height="7" rx="2"/>
+              <rect x="3" y="14" width="7" height="7" rx="2"/>
+              <rect x="14" y="14" width="7" height="7" rx="2"/>
+            </svg>
+            运行总览
+          </a>
+          <a href="#devices">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="5" y="2" width="14" height="20" rx="4"/>
+              <path d="M9 17h6M8 6h8v7H8z"/>
+            </svg>
+            设备快照
+          </a>
+          <a href="#users">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M19 8v6M22 11h-6"/>
+            </svg>
+            用户管理
+          </a>
+          <a href="#alerts">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/>
+              <path d="M10 21h4"/>
+            </svg>
+            跌倒告警
+            <span class="nav-count" id="nav-alert-count" hidden>0</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-status">
+          <span class="live-dot" aria-hidden="true"></span>
+          <span>
+            <strong>后端服务运行中</strong>
+            <small>数据库快照自动刷新</small>
+          </span>
+        </div>
+
+        <div class="sidebar-account">
+          <span class="admin-avatar" aria-hidden="true">管</span>
+          <span>
+            <strong>{{ admin.username }}</strong>
+            <small>系统管理员</small>
+          </span>
+          <form method="post" action="{{ url_for('site.logout') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" title="退出登录" aria-label="退出登录">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10 17l5-5-5-5M15 12H3"/>
+                <path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/>
+              </svg>
+            </button>
+          </form>
+        </div>
+      </aside>
+
+      <div class="admin-main">
+        <header class="topbar">
+          <div>
+            <span class="topbar-label">ADMIN CONSOLE</span>
+            <strong>设备管理中心</strong>
+          </div>
+          <div class="topbar-actions">
+            <span class="sync-time">
+              最近同步
+              <strong id="last-updated">正在读取…</strong>
+            </span>
+            <button class="refresh-button" id="refresh-button" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 11a8 8 0 0 0-14.9-4M4 4v5h5"/>
+                <path d="M4 13a8 8 0 0 0 14.9 4M20 20v-5h-5"/>
+              </svg>
+              刷新数据
+            </button>
+          </div>
+        </header>
+
+        <main class="dashboard-content">
+          <section class="overview-section" id="overview">
+            <div class="section-intro">
+              <div>
+                <p class="eyebrow">SYSTEM OVERVIEW</p>
+                <h1>运行总览</h1>
+                <p>
+                  集中查看微信用户、设备状态、检测任务和跌倒事件。
+                </p>
+              </div>
+              <span class="overview-date" id="overview-date"></span>
+            </div>
+
+            <div class="metric-grid" aria-label="核心指标">
+              <article class="metric-card">
+                <span class="metric-icon tone-blue" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <circle cx="9" cy="7" r="4"/>
+                    <path d="M2 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2M18 8h4M20 6v4"/>
+                  </svg>
+                </span>
+                <span class="metric-copy">
+                  <small>用户总数</small>
+                  <strong id="user-count">—</strong>
+                  <em id="active-user-summary">正在读取</em>
+                </span>
+              </article>
+
+              <article class="metric-card">
+                <span class="metric-icon tone-green" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M5 12.5 9.2 17 19 7"/>
+                  </svg>
+                </span>
+                <span class="metric-copy">
+                  <small>在线设备</small>
+                  <strong id="online-device-count">—</strong>
+                  <em id="online-device-summary">共 — 台</em>
+                </span>
+              </article>
+
+              <article class="metric-card">
+                <span class="metric-icon tone-violet" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M4 12h3l2-6 4 12 2-6h5"/>
+                  </svg>
+                </span>
+                <span class="metric-copy">
+                  <small>检测运行中</small>
+                  <strong id="running-device-count">—</strong>
+                  <em id="starting-device-summary">启动中 — 台</em>
+                </span>
+              </article>
+
+              <article class="metric-card">
+                <span class="metric-icon tone-red" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M12 9v4M12 17h.01"/>
+                    <path d="M10.3 3.6 2.4 18a2 2 0 0 0 1.8 3h15.6a2 2 0 0 0 1.8-3L13.7 3.6a2 2 0 0 0-3.4 0Z"/>
+                  </svg>
+                </span>
+                <span class="metric-copy">
+                  <small>故障设备</small>
+                  <strong id="error-device-count">—</strong>
+                  <em id="offline-device-summary">离线 — 台</em>
+                </span>
+              </article>
+
+              <article class="metric-card metric-card-alert">
+                <span class="metric-icon tone-amber" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/>
+                    <path d="M10 21h4"/>
+                  </svg>
+                </span>
+                <span class="metric-copy">
+                  <small>待处理告警</small>
+                  <strong id="pending-alert-count">—</strong>
+                  <em id="latest-alert-summary">暂无记录</em>
+                </span>
+              </article>
+            </div>
+
+            <div class="overview-grid">
+              <article class="health-panel panel">
+                <div class="compact-heading">
+                  <div>
+                    <p class="eyebrow">DEVICE HEALTH</p>
+                    <h2>设备状态分布</h2>
+                  </div>
+                  <span class="subtle-badge" id="enabled-summary">—</span>
+                </div>
+                <div class="health-content">
+                  <div class="health-ring" id="health-ring">
+                    <span>
+                      <strong id="healthy-rate">—</strong>
+                      <small>在线率</small>
+                    </span>
+                  </div>
+                  <div class="health-legend">
+                    <span>
+                      <i class="legend-dot state-online"></i>
+                      在线
+                      <strong id="health-online-count">—</strong>
+                    </span>
+                    <span>
+                      <i class="legend-dot state-offline"></i>
+                      离线
+                      <strong id="health-offline-count">—</strong>
+                    </span>
+                    <span>
+                      <i class="legend-dot state-error"></i>
+                      故障
+                      <strong id="health-error-count">—</strong>
+                    </span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="attention-panel panel" id="attention-panel">
+                <div class="attention-icon" aria-hidden="true">!</div>
+                <div>
+                  <p class="eyebrow">ATTENTION</p>
+                  <h2 id="attention-title">正在汇总系统状态</h2>
+                  <p id="attention-copy">请稍候，系统正在读取最新数据库快照。</p>
+                </div>
+                <a href="#alerts">查看告警记录</a>
+              </article>
+            </div>
+          </section>
+
+          <section class="data-section panel" id="devices">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">AUTHORITATIVE SNAPSHOT</p>
+                <h2>设备状态快照</h2>
+                <p>状态由 MQTT 上报与超时扫描共同维护。</p>
+              </div>
+              <button class="primary-button" id="add-device-button" type="button">
+                <span aria-hidden="true">+</span>
+                登记设备
+              </button>
+            </div>
+
+            <div class="filter-bar">
+              <label class="search-box">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7"/>
+                  <path d="m20 20-4-4"/>
+                </svg>
+                <span class="sr-only">搜索设备</span>
+                <input
+                  id="device-search"
+                  type="search"
+                  placeholder="搜索名称、设备名、用户或位置"
+                  autocomplete="off"
+                >
+              </label>
+              <label>
+                <span class="sr-only">按设备主状态筛选</span>
+                <select id="state-filter">
+                  <option value="">全部主状态</option>
+                  <option value="online">在线</option>
+                  <option value="offline">离线</option>
+                  <option value="error">故障</option>
+                </select>
+              </label>
+              <label>
+                <span class="sr-only">按检测状态筛选</span>
+                <select id="detection-filter">
+                  <option value="">全部检测状态</option>
+                  <option value="idle">空闲</option>
+                  <option value="starting">启动中</option>
+                  <option value="running">检测中</option>
+                  <option value="stopping">停止中</option>
+                </select>
+              </label>
+              <label>
+                <span class="sr-only">按用户筛选</span>
+                <select id="owner-filter">
+                  <option value="">全部用户</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="table-wrap">
+              <table class="data-table device-table">
+                <thead>
+                  <tr>
+                    <th>设备</th>
+                    <th>主状态</th>
+                    <th>检测任务</th>
+                    <th>网络质量</th>
+                    <th>归属与位置</th>
+                    <th>最近通信</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="device-table-body">
+                  <tr class="loading-row">
+                    <td colspan="7">
+                      <span class="spinner" aria-hidden="true"></span>
+                      正在读取设备快照…
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="table-summary" id="device-table-summary">正在加载…</p>
+          </section>
+
+          <section class="data-section panel" id="users">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">WECHAT USERS</p>
+                <h2>用户管理</h2>
+                <p>用户首次微信登录时自动创建，管理员可维护资料和账户状态。</p>
+              </div>
+              <div class="heading-tools">
+                <label class="search-box compact-search">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7"/>
+                    <path d="m20 20-4-4"/>
+                  </svg>
+                  <span class="sr-only">搜索用户</span>
+                  <input
+                    id="user-search"
+                    type="search"
+                    placeholder="搜索昵称或手机号"
+                  >
+                </label>
+                <label>
+                  <span class="sr-only">按用户状态筛选</span>
+                  <select id="user-status-filter">
+                    <option value="">全部用户</option>
+                    <option value="active">正常</option>
+                    <option value="disabled">已禁用</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>用户</th>
+                    <th>手机号</th>
+                    <th>绑定设备</th>
+                    <th>最近登录</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="user-table-body">
+                  <tr class="loading-row">
+                    <td colspan="6">正在读取用户数据…</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="table-summary" id="user-table-summary">正在加载…</p>
+          </section>
+
+          <section class="data-section panel" id="alerts">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">FALL EVENTS</p>
+                <h2>跌倒事件</h2>
+                <p>这里只保存算法判断为跌倒的事件，原始 CSI 不写入数据库。</p>
+              </div>
+              <label>
+                <span class="sr-only">按告警状态筛选</span>
+                <select id="alert-status-filter">
+                  <option value="">全部事件</option>
+                  <option value="pending">待处理</option>
+                  <option value="confirmed">已确认</option>
+                  <option value="ignored">已忽略</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="table-wrap">
+              <table class="data-table alert-table">
+                <thead>
+                  <tr>
+                    <th>发生时间</th>
+                    <th>设备</th>
+                    <th>所属用户</th>
+                    <th>网络质量</th>
+                    <th>通知</th>
+                    <th>处理状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="alert-table-body">
+                  <tr class="loading-row">
+                    <td colspan="7">正在读取跌倒事件…</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="table-summary" id="alert-table-summary">正在加载…</p>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div
+      class="modal-backdrop"
+      id="user-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="user-modal-title"
+      hidden
+    >
+      <section class="modal-card">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">USER PROFILE</p>
+            <h2 id="user-modal-title">编辑用户</h2>
+          </div>
+          <button
+            class="modal-close"
+            type="button"
+            data-close-modal="user-modal"
+            aria-label="关闭"
+          >×</button>
+        </div>
+        <form class="admin-form" id="user-form">
+          <input id="user-id" type="hidden">
+          <div class="record-summary" id="user-record-summary"></div>
+          <label>
+            <span>显示昵称</span>
+            <input id="user-nickname" type="text" maxlength="64">
+          </label>
+          <label>
+            <span>手机号</span>
+            <input id="user-phone" type="tel" maxlength="32">
+          </label>
+          <div class="form-grid">
+            <label>
+              <span>业务角色</span>
+              <select id="user-role">
+                <option value="user">普通用户</option>
+                <option value="admin">业务管理员</option>
+              </select>
+            </label>
+            <label>
+              <span>账户状态</span>
+              <select id="user-status">
+                <option value="active">正常</option>
+                <option value="disabled">禁用</option>
+              </select>
+            </label>
+          </div>
+          <p class="form-note">
+            微信 openid、unionid 和 session_key 不在管理页面展示或修改。
+          </p>
+          <div class="form-actions">
+            <button
+              class="secondary-button"
+              type="button"
+              data-close-modal="user-modal"
+            >取消</button>
+            <button class="primary-button" type="submit">保存用户</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <div
+      class="modal-backdrop"
+      id="device-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="device-modal-title"
+      hidden
+    >
+      <section class="modal-card modal-card-wide">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">DEVICE RECORD</p>
+            <h2 id="device-modal-title">登记设备</h2>
+          </div>
+          <button
+            class="modal-close"
+            type="button"
+            data-close-modal="device-modal"
+            aria-label="关闭"
+          >×</button>
+        </div>
+        <form class="admin-form form-grid" id="device-form">
+          <input id="device-id" type="hidden">
+          <label>
+            <span>设备名称</span>
+            <input
+              id="device-uid"
+              type="text"
+              maxlength="32"
+              pattern="[A-Za-z0-9_-]{1,32}"
+              autocomplete="off"
+              required
+            >
+            <small>硬件唯一标识，创建后不可修改。</small>
+          </label>
+          <label>
+            <span>小程序显示名</span>
+            <input id="device-name" type="text" maxlength="64" required>
+          </label>
+          <label>
+            <span>所属用户</span>
+            <select id="device-owner" required></select>
+          </label>
+          <label>
+            <span>管理状态</span>
+            <select id="device-status">
+              <option value="enabled">启用</option>
+              <option value="disabled">禁用</option>
+            </select>
+          </label>
+          <label>
+            <span>安装位置</span>
+            <input id="device-location" type="text" maxlength="128">
+          </label>
+          <label class="form-grid-full">
+            <span>管理备注</span>
+            <textarea id="device-remark" maxlength="1000" rows="3"></textarea>
+          </label>
+          <div class="topic-preview form-grid-full">
+            <span>MQTT Topic 由设备名称自动生成</span>
+            <code id="device-topic-preview">
+              csi/v1/devices/{device_name}/up/#
+            </code>
+          </div>
+          <div
+            class="record-summary form-grid-full"
+            id="device-live-summary"
+            hidden
+          ></div>
+          <div class="form-actions form-grid-full">
+            <button
+              class="secondary-button"
+              type="button"
+              data-close-modal="device-modal"
+            >取消</button>
+            <button class="primary-button" type="submit">保存设备</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <div class="toast" id="toast" role="status" hidden>
+      <span>
+        <strong id="toast-title">操作完成</strong>
+        <small id="toast-message"></small>
+      </span>
+      <button id="toast-close" type="button" aria-label="关闭">×</button>
+    </div>
+  </body>
+</html>

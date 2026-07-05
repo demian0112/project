@@ -1,0 +1,31 @@
+page { background:#f3f6f4; }
+.page { min-height:100vh; padding:0 34rpx 70rpx; box-sizing:border-box; }
+.nav-bar { display:flex; height:96rpx; align-items:center; justify-content:space-between; }
+.back-button,.nav-placeholder { display:grid; width:64rpx; height:64rpx; place-items:center; }
+.back-button { border-radius:22rpx; background:#fff; }
+.back-arrow { width:16rpx; height:16rpx; border-left:4rpx solid #33423b; border-bottom:4rpx solid #33423b; transform:rotate(45deg); }
+.nav-title { font-size:28rpx; font-weight:760; }
+.page-heading { margin:18rpx 4rpx 28rpx; }
+.page-title { display:block; font-size:40rpx; font-weight:800; }
+.page-desc { display:block; margin-top:10rpx; color:#89958f; font-size:20rpx; }
+.device-list { display:grid; gap:22rpx; }
+.device-card { min-height:300rpx; padding:30rpx; box-sizing:border-box; border:1rpx solid #e5ebe8; border-radius:38rpx; background:#fff; box-shadow:0 18rpx 46rpx rgba(38,61,51,.05); }
+.card-head { display:flex; align-items:center; gap:22rpx; }
+.device-icon { position:relative; width:84rpx; height:84rpx; flex:0 0 auto; border-radius:28rpx; background:#e8f5f0; }
+.device-icon::before { content:""; position:absolute; left:21rpx; top:34rpx; width:42rpx; height:27rpx; box-sizing:border-box; border:4rpx solid #168765; border-radius:9rpx; }
+.antenna { position:absolute; top:19rpx; left:41rpx; width:4rpx; height:19rpx; border-radius:4rpx; background:#168765; }
+.device-led { position:absolute; right:23rpx; bottom:29rpx; width:6rpx; height:6rpx; border-radius:50%; background:#168765; }
+.device-copy { min-width:0; flex:1; }
+.device-name { display:block; font-size:27rpx; font-weight:780; }
+.device-location { display:block; margin-top:8rpx; color:#8d9892; font-size:18rpx; }
+.divider { height:1rpx; margin:26rpx 0 12rpx; background:#edf1ef; }
+.info-row { display:flex; min-height:58rpx; align-items:center; justify-content:space-between; gap:24rpx; }
+.info-label { color:#8d9892; font-size:18rpx; }
+.info-value { min-width:0; color:#34413b; font-size:19rpx; font-weight:650; text-align:right; }
+.device-id { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.empty-card { display:flex; min-height:520rpx; align-items:center; justify-content:center; flex-direction:column; text-align:center; border-radius:38rpx; background:#fff; }
+.empty-icon { display:grid; width:90rpx; height:90rpx; place-items:center; color:#d94f48; font-size:38rpx; font-weight:800; border-radius:30rpx; background:#fff0ef; }
+.empty-icon-neutral { color:#168765; background:#e8f5f0; }
+.empty-title { margin-top:24rpx; font-size:28rpx; font-weight:760; }
+.empty-desc { max-width:460rpx; margin-top:12rpx; color:#89958f; font-size:20rpx; line-height:1.6; }
+.retry-button { margin-top:30rpx; color:#fff; font-size:21rpx; border-radius:22rpx; background:#168765; }

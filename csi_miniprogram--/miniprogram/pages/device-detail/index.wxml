@@ -1,0 +1,65 @@
+<view class="page" style="padding-top: {{statusBarHeight}}px">
+  <view class="nav-bar">
+    <view class="back-button" bindtap="onBack"><view class="back-arrow"></view></view>
+    <text class="nav-title">设备监测</text>
+    <view class="nav-placeholder"></view>
+  </view>
+
+  <view wx:if="{{loading}}" class="loading-wrap"><view class="monitor-hero skeleton"></view><view class="hero-card skeleton"></view></view>
+
+  <view wx:elif="{{loadError}}" class="empty-card">
+    <view class="empty-icon">!</view><text class="empty-title">设备信息加载失败</text><text class="empty-desc">{{loadError}}</text>
+    <button class="retry-button" bindtap="onRetry">重新加载</button>
+  </view>
+
+  <block wx:elif="{{device}}">
+    <view class="monitor-hero {{activeAlert ? 'monitor-alert' : ''}}">
+      <view class="monitor-top">
+        <view><text class="monitor-location">{{device.location || '未设置位置'}}</text><text class="monitor-device">{{device.display_name}}</text></view>
+        <view class="monitor-pill state-pill-{{device.state}}"><view class="monitor-dot"></view><text>{{stateText}}</text></view>
+      </view>
+      <view class="gauge-wrap">
+        <gauge-ring progress="{{device.detection_state === 'running' ? 0.88 : 0.22}}" color="{{activeAlert ? '#d94f48' : device.state === 'online' ? '#168765' : '#aab3af'}}" bgColor="#edf2ef">
+          <view class="gauge-content">
+            <view class="radar"><view class="radar-ring radar-one"></view><view class="radar-ring radar-two"></view><view class="radar-dot"></view></view>
+            <text class="gauge-title">{{activeAlert ? '检测到跌倒' : detectionText}}</text>
+            <text class="gauge-desc">{{activeAlert ? '请尽快确认安全' : device.detection_state === 'running' ? '环境状态持续分析中' : '设备准备就绪'}}</text>
+          </view>
+        </gauge-ring>
+      </view>
+      <view class="monitor-metrics">
+        <view><text class="monitor-metric-label">CSI 网络质量</text><text class="monitor-metric-value quality-{{device.network_quality}}">{{qualityLabel}}</text></view>
+        <view class="metric-separator"></view>
+        <view><text class="monitor-metric-label">当前状态</text><text class="monitor-metric-value">{{detectionText}}</text></view>
+      </view>
+    </view>
+
+    <view wx:if="{{activeAlert}}" class="alert-banner" bindtap="onAlertTap">
+      <view class="alert-symbol">!</view><view class="alert-copy"><text class="alert-title">检测到跌倒事件</text><text class="alert-desc">{{alertTimeText}}</text></view><view class="detail-chevron"></view>
+    </view>
+    <view wx:if="{{activeAlert}}" class="alert-actions"><button class="safe-action" bindtap="onConfirmSafe">我已确认安全</button><button class="detail-action" bindtap="onAlertTap">查看告警</button></view>
+
+    <view class="section-title">设备信息</view>
+    <view class="hero-card state-{{device.state}}">
+      <view class="device-icon"><view class="antenna"></view><view class="device-led"></view></view>
+      <view class="hero-copy"><text class="location">{{device.location || '未设置位置'}}</text><text class="device-name">{{device.display_name}}</text><text class="device-id">{{device.device_name}}</text></view>
+      <view class="state-pill"><view class="state-dot"></view>{{stateText}}</view>
+    </view>
+
+    <view wx:if="{{device.state === 'error'}}" class="fault-banner"><text class="fault-title">设备发生异常</text><text class="fault-desc">{{device.fault.message || device.fault_message || '请检查设备连接和供电状态'}}</text></view>
+
+    <view class="section-title">通信与运行</view>
+    <view class="status-card">
+      <view class="metric-grid">
+        <view class="metric"><text class="metric-label">运行状态</text><text class="metric-value">{{detectionText}}</text></view>
+        <view class="metric"><text class="metric-label">检测状态</text><text class="metric-value">{{detectionText}}</text></view>
+        <view class="metric metric-wide"><text class="metric-label">最近通信</text><text class="metric-value metric-small">{{lastSeenText}}</text></view>
+      </view>
+    </view>
+
+    <view class="notice"><view class="notice-icon">i</view><text>控制请求成功仅代表命令已发送，最终运行状态由设备回执更新。</text></view>
+    <button class="control-button {{device.detection_state === 'running' ? 'stop-button' : ''}}" loading="{{controlLoading}}" disabled="{{controlLoading || !device.enabled || device.state !== 'online' || device.fault.code || device.detection_state === 'starting' || device.detection_state === 'stopping'}}" bindtap="onControlTap">
+      {{!device.enabled ? '设备已停用' : device.state === 'offline' ? '设备离线，无法操作' : device.state === 'error' || device.fault.code ? '设备异常，请先检查' : device.detection_state === 'running' ? '停止检测' : device.detection_state === 'starting' ? '正在启动…' : device.detection_state === 'stopping' ? '正在停止…' : '开始检测'}}
+    </button>
+  </block>
+</view>

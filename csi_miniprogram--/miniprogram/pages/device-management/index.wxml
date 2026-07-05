@@ -1,0 +1,44 @@
+<view class="page" style="padding-top: {{statusBarHeight}}px">
+  <view class="nav-bar">
+    <view class="back-button" bindtap="onBack"><view class="back-arrow"></view></view>
+    <text class="nav-title">设备管理</text>
+    <view class="nav-placeholder"></view>
+  </view>
+
+  <view class="page-heading">
+    <text class="page-title">我的设备</text>
+    <text class="page-desc">查看当前账号已绑定的设备信息</text>
+  </view>
+
+  <block wx:if="{{loading}}">
+    <view class="device-card skeleton"></view>
+  </block>
+
+  <view wx:elif="{{loadError}}" class="empty-card">
+    <view class="empty-icon">!</view>
+    <text class="empty-title">设备信息加载失败</text>
+    <text class="empty-desc">{{loadError}}</text>
+    <button class="retry-button" bindtap="onRetry">重新加载</button>
+  </view>
+
+  <view wx:elif="{{!devices.length}}" class="empty-card">
+    <view class="empty-icon empty-icon-neutral">＋</view>
+    <text class="empty-title">暂未绑定设备</text>
+    <text class="empty-desc">设备绑定功能接入后，可在这里查看设备。</text>
+  </view>
+
+  <view wx:else class="device-list">
+    <view wx:for="{{devices}}" wx:key="device_name" class="device-card">
+      <view class="card-head">
+        <view class="device-icon"><view class="antenna"></view><view class="device-led"></view></view>
+        <view class="device-copy">
+          <text class="device-name">{{item.display_name}}</text>
+          <text class="device-location">{{item.location || '未设置安装位置'}}</text>
+        </view>
+      </view>
+      <view class="divider"></view>
+      <view class="info-row"><text class="info-label">设备编号</text><text class="info-value device-id">{{item.device_name}}</text></view>
+      <view class="info-row"><text class="info-label">安装位置</text><text class="info-value">{{item.location || '未设置'}}</text></view>
+    </view>
+  </view>
+</view>

@@ -1,0 +1,102 @@
+/* 自定义底部 TabBar — 白色毛玻璃风格 */
+
+.tab-bar {
+  position: fixed;
+  z-index: 12;
+  right: 12rpx;
+  bottom: 12rpx;
+  left: 12rpx;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  height: 144rpx;
+  padding: 18rpx 12rpx 14rpx;
+  border: 1rpx solid rgba(23, 33, 29, 0.06);
+  border-radius: 46rpx;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 24rpx 70rpx rgba(28, 44, 37, 0.12);
+  backdrop-filter: blur(36rpx);
+  pointer-events: auto;
+}
+
+.tab {
+  display: grid;
+  min-width: 0;
+  place-items: center;
+  align-content: center;
+  gap: 10rpx;
+  color: #a3aca8;
+  font-size: 18rpx;
+  font-weight: 650;
+  transition: color 0.2s ease;
+}
+
+.tab.active {
+  color: #0f7f5e;
+}
+
+.tab-icon {
+  position: relative;
+  display: grid;
+  width: 50rpx;
+  height: 50rpx;
+  place-items: center;
+}
+
+.tab-text {
+  font-size: 18rpx;
+}
+
+/* ── 监测图标 (home icon) ────────────── */
+
+.home-icon {
+  position: relative;
+  width: 32rpx;
+  height: 28rpx;
+  margin-top: 8rpx;
+  border: 3rpx solid currentColor;
+  border-top: 0;
+  border-radius: 6rpx;
+}
+
+.home-icon::before {
+  content: "";
+  position: absolute;
+  top: 6rpx;
+  left: 50%;
+  width: 22rpx;
+  height: 22rpx;
+  border-top: 3rpx solid currentColor;
+  border-left: 3rpx solid currentColor;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+/* ── 我的图标 (person icon) ──────────── */
+
+.user-icon {
+  position: relative;
+  width: 32rpx;
+  height: 32rpx;
+}
+
+.user-icon::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 12rpx;
+  height: 12rpx;
+  border: 3rpx solid currentColor;
+  border-radius: 50%;
+  transform: translateX(-50%);
+}
+
+.user-icon::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 14rpx;
+  border: 3rpx solid currentColor;
+  border-radius: 18rpx 18rpx 6rpx 6rpx;
+}

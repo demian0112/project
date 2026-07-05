@@ -1,0 +1,203 @@
+/* 个人中心页 — 白色医疗健康风 */
+
+page {
+  background: #f2f5f3;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #17211d;
+}
+
+.page {
+  padding: 0 34rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ── Profile Header ─────────────────────── */
+
+.profile-head {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  padding: 38rpx 34rpx;
+  border: 1rpx solid rgba(25, 53, 41, 0.05);
+  border-radius: 44rpx;
+  background: #fff;
+  box-shadow: 0 28rpx 68rpx rgba(38, 61, 51, 0.06);
+  margin-bottom: 24rpx;
+}
+
+.profile-decor {
+  position: absolute;
+  top: -56rpx;
+  right: -56rpx;
+  width: 190rpx;
+  height: 190rpx;
+  border: 36rpx solid #eaf8f2;
+  border-radius: 50%;
+}
+
+.profile-main {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+}
+
+.profile-avatar {
+  display: grid;
+  width: 110rpx;
+  height: 110rpx;
+  place-items: center;
+  border: 8rpx solid #f1f5f3;
+  border-radius: 38rpx;
+  color: #fff;
+  font-size: 36rpx;
+  font-weight: 760;
+  background: #50655c;
+  flex: 0 0 auto;
+}
+
+.profile-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.profile-name {
+  display: block;
+  font-size: 34rpx;
+  font-weight: 780;
+}
+
+.profile-desc {
+  display: block;
+  margin-top: 10rpx;
+  color: #909b95;
+  font-size: 18rpx;
+  font-weight: 600;
+}
+
+/* ── Section Title ──────────────────────── */
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: 0 0 18rpx;
+  font-size: 26rpx;
+  font-weight: 770;
+}
+
+.section-link {
+  color: #98a19d;
+  font-size: 18rpx;
+  font-weight: 650;
+}
+
+/* ── Feature Card / Settings List ───────── */
+
+.feature-card {
+  width: 100%;
+  overflow: hidden;
+  border: 1rpx solid rgba(25, 53, 41, 0.05);
+  border-radius: 38rpx;
+  background: #fff;
+  margin-bottom: 24rpx;
+}
+
+.feature-item {
+  display: flex;
+  align-items: center;
+  gap: 22rpx;
+  min-height: 122rpx;
+  padding: 22rpx 26rpx;
+}
+
+.feature-item + .feature-item {
+  border-top: 1rpx solid #edf0ee;
+}
+
+.feature-icon {
+  display: grid;
+  width: 68rpx;
+  height: 68rpx;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 22rpx;
+}
+
+.feature-icon-device {
+  color: #4e78e8;
+  background: #eef3ff;
+}
+
+.device-icon-sm {
+  width: 34rpx;
+  height: 28rpx;
+  border: 4rpx solid currentColor;
+  border-radius: 8rpx;
+}
+
+
+.feature-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.feature-name {
+  display: block;
+  font-size: 22rpx;
+  font-weight: 700;
+}
+
+.feature-desc {
+  display: block;
+  margin-top: 8rpx;
+  overflow: hidden;
+  color: #9aa39f;
+  font-size: 16rpx;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  width: 14rpx;
+  height: 14rpx;
+  border-top: 3rpx solid #adb5b1;
+  border-right: 3rpx solid #adb5b1;
+  transform: rotate(45deg);
+  flex: 0 0 auto;
+}
+
+/* ── Bottom Safe Area ───────────────────── */
+
+.bottom-safe {
+  height: 200rpx;
+}
+
+.page-heading { width:100%; margin-bottom:28rpx; }
+.page-kicker { display:block; color:#89958f; font-size:20rpx; font-weight:600; }
+.page-title { display:block; margin-top:8rpx; font-size:42rpx; font-weight:800; letter-spacing:-1rpx; }
+.profile-head.skeleton { min-height:300rpx; border:0; }
+.profile-image { display:block; padding:0; object-fit:cover; }
+.login-card { display:flex; width:100%; min-height:500rpx; padding:56rpx 38rpx; box-sizing:border-box; align-items:center; justify-content:center; flex-direction:column; text-align:center; border-radius:40rpx; background:#fff; box-shadow:0 28rpx 68rpx rgba(38, 61, 51, 0.06); }
+.login-icon { position:relative; width:92rpx; height:92rpx; border-radius:30rpx; background:#eaf8f2; }
+.login-icon::before { content:""; position:absolute; left:26rpx; top:20rpx; width:40rpx; height:40rpx; border-radius:50%; background:#168765; }
+.login-icon::after { content:""; position:absolute; left:20rpx; bottom:18rpx; width:52rpx; height:24rpx; border-radius:24rpx 24rpx 10rpx 10rpx; background:#168765; }
+.login-title { margin-top:26rpx; font-size:30rpx; font-weight:780; }
+.login-desc { max-width:560rpx; margin-top:14rpx; color:#89958f; font-size:20rpx; line-height:1.6; }
+.login-action { margin-top:34rpx; min-width:260rpx; color:#fff; font-size:22rpx; border-radius:22rpx; background:#168765; }
+.load-error-card { display:flex; width:100%; min-height:440rpx; padding:50rpx 34rpx; box-sizing:border-box; align-items:center; justify-content:center; flex-direction:column; text-align:center; border-radius:40rpx; background:#fff; }
+.load-error-icon { display:grid; width:86rpx; height:86rpx; place-items:center; color:#d94f48; font-size:36rpx; font-weight:800; border-radius:28rpx; background:#fff0ef; }
+.load-error-title { margin-top:24rpx; font-size:27rpx; font-weight:760; }
+.load-error-desc { margin-top:12rpx; color:#89958f; font-size:19rpx; line-height:1.6; }
+.load-error-action { margin-top:28rpx; color:#fff; font-size:20rpx; border-radius:22rpx; background:#168765; }
+.phone-card { display:flex; width:100%; align-items:center; gap:22rpx; box-sizing:border-box; padding:28rpx 30rpx; margin-bottom:24rpx; border:1rpx solid rgba(25, 53, 41, 0.05); border-radius:34rpx; background:#fff; }
+.phone-copy { min-width:0; flex:1 1 auto; }
+.phone-title { display:block; font-size:24rpx; font-weight:760; }
+.phone-desc { display:block; margin-top:8rpx; color:#89958f; font-size:18rpx; line-height:1.5; }
+.phone-action { flex:0 0 auto; min-width:180rpx; margin:0; color:#fff; font-size:20rpx; border-radius:22rpx; background:#168765; }

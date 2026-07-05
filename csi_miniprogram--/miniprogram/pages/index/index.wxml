@@ -1,0 +1,58 @@
+<view class="page" style="padding-top: {{statusBarHeight + 16}}px">
+  <view class="page-head">
+    <view>
+      <text class="page-kicker">安守 CSI</text>
+      <text class="page-title">家庭设备</text>
+      <text class="page-desc">查看设备状态，进入设备开始检测</text>
+    </view>
+    <view class="brand-mark"><view class="brand-wave"></view></view>
+  </view>
+
+  <view class="summary-card">
+    <view class="summary-item"><text class="summary-value">{{totalCount}}</text><text class="summary-label">全部设备</text></view>
+    <view class="summary-divider"></view>
+    <view class="summary-item"><text class="summary-value summary-green">{{onlineCount}}</text><text class="summary-label">在线设备</text></view>
+    <view class="summary-divider"></view>
+    <view class="summary-item"><text class="summary-value summary-blue">{{runningCount}}</text><text class="summary-label">检测中</text></view>
+  </view>
+
+  <view wx:if="{{activeAlert}}" class="alert-banner" bindtap="onAlertTap">
+    <view class="alert-icon">!</view>
+    <view class="alert-copy"><text class="alert-title">检测到疑似跌倒</text><text class="alert-desc">{{activeAlert.location}} · {{alertTimeText}}</text></view>
+    <view class="chevron alert-chevron"></view>
+  </view>
+
+  <view class="section-head"><text class="section-title">设备列表</text><text class="section-count">{{totalCount}} 台</text></view>
+
+  <block wx:if="{{loading}}">
+    <view class="device-card skeleton"></view>
+    <view class="device-card skeleton"></view>
+  </block>
+
+  <view wx:elif="{{loadError}}" class="state-card">
+    <view class="state-icon state-error-icon">!</view><text class="state-title">暂时无法连接服务</text><text class="state-desc">{{loadError}}</text>
+    <button class="retry-button" bindtap="onRetry">重新加载</button>
+  </view>
+
+  <view wx:elif="{{!devices.length}}" class="state-card">
+    <view class="state-icon">＋</view><text class="state-title">暂无设备</text><text class="state-desc">绑定设备后将在这里显示。</text>
+  </view>
+
+  <view wx:else class="device-list">
+    <view wx:for="{{devices}}" wx:key="device_name" class="device-card device-{{item.state}}" data-name="{{item.device_name}}" bindtap="onDeviceTap">
+      <view class="card-top">
+        <view class="device-icon"><view class="antenna"></view><view class="device-led"></view></view>
+        <view class="device-copy"><text class="device-name">{{item.display_name}}</text><text class="device-location">{{item.location || '未设置位置'}}</text></view>
+        <view class="state-pill"><view class="state-dot"></view><text>{{item.stateText}}</text></view>
+      </view>
+      <view class="card-divider"></view>
+      <view class="card-metrics">
+        <view class="metric"><text class="metric-label">检测状态</text><text class="metric-value">{{item.detectionText}}</text></view>
+        <view class="metric"><text class="metric-label">CSI 网络</text><text class="metric-value {{item.qualityClass}}">{{item.qualityLabel}}</text></view>
+        <view class="enter-detail"><text>进入设备</text><view class="chevron"></view></view>
+      </view>
+    </view>
+  </view>
+
+  <view class="bottom-safe"></view>
+</view>

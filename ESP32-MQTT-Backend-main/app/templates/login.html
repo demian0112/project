@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="安守 CSI 跌倒检测系统管理员登录"
+    >
+    <title>管理员登录 · 安守 CSI</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/dashboard.css') }}"
+    >
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <section class="login-intro">
+        <a class="brand login-brand" href="/">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </span>
+          <span class="brand-copy">
+            <strong>安守 CSI</strong>
+            <small>FALL DETECTION</small>
+          </span>
+        </a>
+        <div>
+          <p class="eyebrow">SECURE ADMIN ACCESS</p>
+          <h1>守护设备在线，<br>让每次告警有迹可循。</h1>
+          <p>
+            统一查看设备状态、检测任务、网络质量与跌倒事件。
+          </p>
+        </div>
+        <small class="login-footnote">Flask · SQLite · MQTT · WebSocket</small>
+      </section>
+
+      <section class="login-card">
+        <div class="login-card-content">
+          <p class="eyebrow">WELCOME BACK</p>
+          <h2>管理员登录</h2>
+          <p class="login-copy">请输入数据库中已创建的管理员账号。</p>
+
+          {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+              {% for category, message in messages %}
+                <div class="login-alert login-alert-{{ category }}">
+                  {{ message }}
+                </div>
+              {% endfor %}
+            {% endif %}
+          {% endwith %}
+
+          <form class="login-form" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label>
+              <span>管理员账号</span>
+              <input
+                type="text"
+                name="username"
+                maxlength="80"
+                autocomplete="username"
+                autofocus
+                required
+              >
+            </label>
+            <label>
+              <span>密码</span>
+              <input
+                type="password"
+                name="password"
+                autocomplete="current-password"
+                required
+              >
+            </label>
+            <button class="login-submit" type="submit">
+              登录管理中心
+              <span aria-hidden="true">→</span>
+            </button>
+          </form>
+          <p class="login-help">
+            首次使用请先运行
+            <code>flask --app run create-admin</code>
+          </p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,429 @@
+from __future__ import annotations
+
+import re
+from datetime import datetime, timezone
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from .extensions import db
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def isoformat(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+DEVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+class Admin(db.Model):
+    __tablename__ = "admin"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(
+        String(80),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+
+    def set_password(self, password: str) -> None:
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password: str) -> bool:
+        return check_password_hash(self.password_hash, password)
+
+
+class User(db.Model):
+    """A mini-program user identified by the openid returned by WeChat."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wx_openid: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+    wx_unionid: Mapped[str | None] = mapped_column(
+        String(64),
+        index=True,
+        nullable=True,
+    )
+    wx_session_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    nickname: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    role: Mapped[str] = mapped_column(
+        String(20),
+        default="user",
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="active",
+        nullable=False,
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    devices: Mapped[list[Device]] = relationship(
+        back_populates="owner",
+        cascade="all, delete-orphan",
+    )
+    fall_events: Mapped[list[FallEvent]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    @property
+    def admin_display_name(self) -> str:
+        return self.nickname or f"微信用户 #{self.id}"
+
+    def to_dict(self) -> dict:
+        """Administrator representation; never include WeChat secrets."""
+        return {
+            "id": self.id,
+            "nickname": self.nickname,
+            "avatar_url": self.avatar_url,
+            "phone": self.phone,
+            "role": self.role,
+            "status": self.status,
+            "device_count": len(self.devices),
+            "last_login_at": isoformat(self.last_login_at),
+            "created_at": isoformat(self.created_at),
+        }
+
+    def to_public_dict(self) -> dict:
+        """Mini-program representation; openid and session_key stay private."""
+        return {
+            "id": self.id,
+            "nickname": self.nickname,
+            "avatar_url": self.avatar_url,
+            "phone": self.phone,
+            "status": self.status,
+            "last_login_at": isoformat(self.last_login_at),
+        }
+
+
+class Device(db.Model):
+    """Device ownership plus the authoritative state snapshot."""
+
+    __tablename__ = "devices"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_name: Mapped[str] = mapped_column(
+        String(32),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+    display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+
+    location: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+    state: Mapped[str] = mapped_column(
+        String(20),
+        default="offline",
+        nullable=False,
+    )
+    runtime_state: Mapped[str] = mapped_column(
+        String(20),
+        default="idle",
+        nullable=False,
+    )
+    detection_state: Mapped[str] = mapped_column(
+        String(20),
+        default="idle",
+        nullable=False,
+    )
+    current_session: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    network_quality: Mapped[str] = mapped_column(
+        String(20),
+        default="unknown",
+        nullable=False,
+    )
+    fault_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fault_message: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_online_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_status_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_csi_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    owner: Mapped[User] = relationship(back_populates="devices")
+    fall_events: Mapped[list[FallEvent]] = relationship(
+        back_populates="device",
+        cascade="all, delete-orphan",
+    )
+
+    @staticmethod
+    def is_valid_device_uid(device_name: str) -> bool:
+        return bool(DEVICE_NAME_RE.fullmatch(device_name or ""))
+
+    # Compatibility aliases for the existing administrator API and page.
+    @property
+    def device_uid(self) -> str:
+        return self.device_name
+
+    @device_uid.setter
+    def device_uid(self, value: str) -> None:
+        self.device_name = value
+
+    @property
+    def name(self) -> str:
+        return self.display_name or self.device_name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        self.display_name = value
+
+    @property
+    def mqtt_topic(self) -> str:
+        return f"csi/v1/devices/{self.device_name}/up/csi"
+
+    @property
+    def status(self) -> str:
+        return "enabled" if self.enabled else "disabled"
+
+    @status.setter
+    def status(self, value: str) -> None:
+        self.enabled = value == "enabled"
+
+    @property
+    def owner_id(self) -> int:
+        return self.owner_user_id
+
+    @owner_id.setter
+    def owner_id(self, value: int) -> None:
+        self.owner_user_id = value
+
+    def to_dict(self) -> dict:
+        """Administrator representation kept compatible with the current UI."""
+        return {
+            "id": self.id,
+            "device_uid": self.device_name,
+            "name": self.name,
+            "mqtt_topic": self.mqtt_topic,
+            "status": self.status,
+            "state": self.state,
+            "enabled": self.enabled,
+            "runtime_state": self.runtime_state,
+            "detection_state": self.detection_state,
+            "current_session": self.current_session,
+            "network_quality": self.network_quality,
+            "fault_code": self.fault_code,
+            "fault_message": self.fault_message,
+            "owner_id": self.owner_user_id,
+            "owner_username": self.owner.admin_display_name,
+            "location": self.location,
+            "remark": self.remark,
+            "last_seen_at": isoformat(self.last_seen_at),
+            "last_online_at": isoformat(self.last_online_at),
+            "last_status_at": isoformat(self.last_status_at),
+            "last_csi_at": isoformat(self.last_csi_at),
+            "created_at": isoformat(self.created_at),
+            "updated_at": isoformat(self.updated_at),
+        }
+
+    def to_summary_dict(self) -> dict:
+        return {
+            "device_name": self.device_name,
+            "display_name": self.display_name,
+            "location": self.location,
+            "state": self.state,
+            "detection_state": self.detection_state,
+            "network_quality": self.network_quality,
+            "last_seen_at": isoformat(self.last_seen_at),
+            "fault_message": self.fault_message,
+        }
+
+    def to_detail_dict(self) -> dict:
+        return {
+            "device_name": self.device_name,
+            "display_name": self.display_name,
+            "location": self.location,
+            "remark": self.remark,
+            "state": self.state,
+            "enabled": self.enabled,
+            "last_seen_at": isoformat(self.last_seen_at),
+            "runtime": {
+                "state": self.runtime_state,
+                "last_status_at": isoformat(self.last_status_at),
+            },
+            "detection": {
+                "state": self.detection_state,
+                "session": self.current_session,
+                "network_quality": self.network_quality,
+                "last_csi_at": isoformat(self.last_csi_at),
+            },
+            "fault": {
+                "code": self.fault_code,
+                "message": self.fault_message,
+            },
+        }
+
+
+class FallEvent(db.Model):
+    __tablename__ = "fall_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    device_id: Mapped[int] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    device_name: Mapped[str] = mapped_column(
+        String(32),
+        index=True,
+        nullable=False,
+    )
+    session: Mapped[str | None] = mapped_column(
+        String(64),
+        index=True,
+        nullable=True,
+    )
+    result: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    network_quality: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="pending",
+        nullable=False,
+    )
+    notified: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    handled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    user: Mapped[User] = relationship(back_populates="fall_events")
+    device: Mapped[Device] = relationship(back_populates="fall_events")
+
+    def to_public_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "device_name": self.device_name,
+            "display_name": self.device.display_name,
+            "location": self.device.location,
+            "result": self.result,
+            "occurred_at": isoformat(self.occurred_at),
+            "network_quality": self.network_quality,
+            "status": self.status,
+            "handled_at": isoformat(self.handled_at),
+            "remark": self.remark,
+        }
+
+    def to_admin_dict(self) -> dict:
+        item = self.to_public_dict()
+        item.update(
+            {
+                "user_id": self.user_id,
+                "owner_name": self.user.admin_display_name,
+                "session": self.session,
+                "notified": self.notified,
+                "notified_at": isoformat(self.notified_at),
+                "created_at": isoformat(self.created_at),
+                "updated_at": isoformat(self.updated_at),
+            }
+        )
+        return item

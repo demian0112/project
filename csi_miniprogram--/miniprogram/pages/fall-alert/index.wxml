@@ -1,0 +1,33 @@
+<view class="page" style="padding-top: {{statusBarHeight}}px">
+  <view class="nav-bar"><view class="back-button" bindtap="onBack"><view class="back-arrow"></view></view><text class="nav-title">跌倒告警</text><view class="nav-placeholder"></view></view>
+
+  <view wx:if="{{loading}}" class="loading-card skeleton"></view>
+  <view wx:elif="{{loadError}}" class="empty-card">
+    <view class="empty-icon">!</view><text class="empty-title">无法读取告警</text><text class="empty-desc">{{loadError}}</text><button class="retry-button" bindtap="onRetry">重新加载</button>
+  </view>
+
+  <block wx:elif="{{alert}}">
+    <view class="alert-hero">
+      <view class="alert-rings"><view class="alert-symbol">!</view></view>
+      <text class="alert-kicker">紧急事件</text>
+      <text class="alert-title">检测到疑似跌倒</text>
+      <text class="alert-desc">请尽快确认家人当前是否安全</text>
+    </view>
+
+    <view class="detail-card">
+      <view class="device-row"><view><text class="detail-label">发生设备</text><text class="device-name">{{alert.display_name}}</text></view><view class="location-pill">{{alert.location || '未设置位置'}}</view></view>
+      <view class="divider"></view>
+      <view class="detail-grid">
+        <view class="detail-item detail-wide"><text class="detail-label">检测时间</text><text class="detail-value">{{occurredText}}</text></view>
+        <view class="detail-item"><text class="detail-label">CSI 网络质量</text><text class="detail-value quality-{{alert.network_quality}}">{{qualityLabel}}</text></view>
+        <view class="detail-item"><text class="detail-label">检测结果</text><text class="detail-value">{{resultText}}</text></view>
+      </view>
+    </view>
+
+    <view class="notify-note"><view class="notify-icon">✓</view><view><text class="notify-title">告警已记录</text><text class="notify-desc">微信订阅通知状态以后端返回结果为准</text></view></view>
+
+    <button class="safe-button" loading="{{confirming}}" disabled="{{confirming || alert.status === 'confirmed'}}" bindtap="onConfirmSafe">{{alert.status === 'confirmed' ? '已确认安全' : '我已确认安全'}}</button>
+    <button class="contact-button" bindtap="onContactFamily">联系家人</button>
+    <button class="home-button" bindtap="onBackHome">返回监测首页</button>
+  </block>
+</view>

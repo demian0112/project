@@ -1,0 +1,30 @@
+page {
+  --brand: #168765;
+  --brand-soft: #e8f5f0;
+  --ink: #17211d;
+  --muted: #7d8983;
+  --line: #e5ebe8;
+  --danger: #d94f48;
+  --danger-soft: #fff0ef;
+  --warning: #d98d18;
+  --surface: #ffffff;
+  --background: #f3f6f4;
+  min-height: 100%;
+  background: var(--background);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+button::after { border: 0; }
+
+.skeleton {
+  overflow: hidden;
+  background: linear-gradient(90deg, #edf1ef 25%, #f8faf9 37%, #edf1ef 63%);
+  background-size: 400% 100%;
+  animation: skeleton-loading 1.4s ease infinite;
+}
+
+@keyframes skeleton-loading {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}

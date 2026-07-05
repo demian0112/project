@@ -1,0 +1,13 @@
+.DS_Store
+.env
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+
+# Local virtual environments
+.venv/
+venv/
+
+# Flask instance data, including the SQLite database
+instance/

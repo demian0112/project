@@ -1,0 +1,22 @@
+<view class="tab-bar">
+  <view
+    class="tab {{selected === 0 ? 'active' : ''}}"
+    data-index="0"
+    bindtap="switchTab"
+  >
+    <view class="tab-icon">
+      <view class="home-icon"></view>
+    </view>
+    <text class="tab-text">监测</text>
+  </view>
+  <view
+    class="tab {{selected === 1 ? 'active' : ''}}"
+    data-index="1"
+    bindtap="switchTab"
+  >
+    <view class="tab-icon">
+      <view class="user-icon"></view>
+    </view>
+    <text class="tab-text">我的</text>
+  </view>
+</view>

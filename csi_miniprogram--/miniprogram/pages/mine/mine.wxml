@@ -1,0 +1,42 @@
+<view class="page" style="padding-top: {{statusBarHeight + 16}}px">
+  <view class="page-heading"><text class="page-kicker">账户与服务</text><text class="page-title">个人中心</text></view>
+
+  <view wx:if="{{!authenticated}}" class="login-card">
+    <view class="login-icon"></view>
+    <text class="login-title">登录后使用安守 CSI</text>
+    <text class="login-desc">{{loadError || '登录后可查看已绑定设备、同步告警记录和管理个人资料。'}}</text>
+    <button class="login-action" loading="{{loggingIn}}" bindtap="onLogin">微信登录</button>
+  </view>
+
+  <view wx:elif="{{loadError}}" class="load-error-card">
+    <view class="load-error-icon">!</view>
+    <text class="load-error-title">无法读取用户资料</text>
+    <text class="load-error-desc">{{loadError}}</text>
+    <button class="load-error-action" bindtap="onRetry">重新登录并加载</button>
+  </view>
+
+  <block wx:else>
+  <view class="profile-head {{loading ? 'skeleton' : ''}}">
+    <view wx:if="{{!loading}}" class="profile-decor"></view>
+    <view wx:if="{{!loading}}" class="profile-main">
+      <image wx:if="{{avatarUrl}}" class="profile-avatar profile-image" src="{{avatarUrl}}" mode="aspectFill"></image>
+      <view wx:else class="profile-avatar">{{avatarText || '·'}}</view>
+      <view class="profile-copy"><text class="profile-name">{{userName || '未设置昵称'}}</text><text class="profile-desc">{{accountText || '用户资料加载失败'}}{{phoneText ? ' · ' + phoneText : ''}}{{lastLoginText ? ' · 最近登录 ' + lastLoginText : ''}}</text></view>
+    </view>
+  </view>
+
+  <view wx:if="{{showPhonePrompt}}" class="phone-card">
+    <view class="phone-copy">
+      <text class="phone-title">绑定手机号</text>
+      <text class="phone-desc">首次登录建议授权手机号，便于后续管理员识别和服务联系。</text>
+    </view>
+    <button class="phone-action" open-type="getPhoneNumber" bindgetphonenumber="onGetPhoneNumber" loading="{{phoneLoading}}">授权手机号</button>
+  </view>
+
+  <view class="section-title"><text>设备</text><text class="section-link">管理已绑定设备</text></view>
+  <view class="feature-card">
+    <view class="feature-item" bindtap="onTapDeviceManagement"><view class="feature-icon feature-icon-device"><view class="device-icon-sm"></view></view><view class="feature-copy"><text class="feature-name">设备管理</text><text class="feature-desc">{{totalDevices ? totalDevices + ' 台设备已绑定' : '暂未绑定设备'}}</text></view><view class="chevron"></view></view>
+  </view>
+  </block>
+  <view class="bottom-safe"></view>
+</view>
