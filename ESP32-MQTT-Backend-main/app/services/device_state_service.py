@@ -386,18 +386,30 @@ class DeviceCoordinator:
             device.last_online_at = now
 
         if runtime_state == "uploading":
-            if reported_session and device.detection_state not in {
-                "starting",
-                "stopping",
-            }:
+            if reported_session and (
+                not device.current_session
+                or device.detection_state not in {"starting", "stopping"}
+            ):
                 device.current_session = reported_session
-            if device.detection_state != "starting":
+            if device.detection_state != "stopping":
                 device.detection_state = (
-                    "stopping"
-                    if device.detection_state == "stopping"
+                    "starting"
+                    if (
+                        reported_session
+                        and device.current_session
+                        and reported_session != device.current_session
+                    )
                     else "running"
                 )
         elif runtime_state == "booting":
+            device.detection_state = "idle"
+            device.current_session = None
+            device.network_quality = "unknown"
+            self._clear_session(device.device_name, old_session)
+        elif (
+            runtime_state == "idle"
+            and device.detection_state == "stopping"
+        ):
             device.detection_state = "idle"
             device.current_session = None
             device.network_quality = "unknown"

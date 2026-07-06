@@ -140,7 +140,6 @@ def wechat_login():
     if user.status != "active":
         return api_error("USER_DISABLED", "用户已被禁用", 403)
 
-    current_app.extensions["device_coordinator"].ensure_for_user(user.id)
     return jsonify(
         {
             "access_token": issue_access_token(user.id),
@@ -245,6 +244,10 @@ def device_detail(device_name: str):
     device, error = _owned_device(device_name)
     if error is not None:
         return error
+    if device.enabled:
+        current_app.extensions["device_coordinator"].mqtt.ensure_device(
+            device.device_name
+        )
     return jsonify(device.to_detail_dict())
 
 

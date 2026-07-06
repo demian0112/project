@@ -196,9 +196,10 @@ def create_device():
     conflict = commit_or_conflict("device_uid already exists")
     if conflict:
         return conflict
-    current_app.extensions["device_coordinator"].mqtt.ensure_device(
-        device.device_name
-    )
+    if current_app.config["MQTT_AUTOSTART_DEVICES"]:
+        current_app.extensions["device_coordinator"].mqtt.ensure_device(
+            device.device_name
+        )
     return jsonify(device.to_dict()), 201
 
 
@@ -211,8 +212,12 @@ def device_detail(device_id: int):
     if request.method == "GET":
         return jsonify(device.to_dict())
     if request.method == "DELETE":
+        device_name = device.device_name
         db.session.delete(device)
         db.session.commit()
+        current_app.extensions["device_coordinator"].mqtt.remove_device(
+            device_name
+        )
         return jsonify({"deleted": True})
 
     data = request.get_json(silent=True) or {}
@@ -226,8 +231,12 @@ def device_detail(device_id: int):
     conflict = commit_or_conflict("device_uid already exists")
     if conflict:
         return conflict
-    if device.enabled:
+    if device.enabled and current_app.config["MQTT_AUTOSTART_DEVICES"]:
         current_app.extensions["device_coordinator"].mqtt.ensure_device(
+            device.device_name
+        )
+    elif not device.enabled:
+        current_app.extensions["device_coordinator"].mqtt.remove_device(
             device.device_name
         )
     return jsonify(device.to_dict())

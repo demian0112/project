@@ -43,6 +43,7 @@ def configure_app(app: Flask) -> None:
         TOKEN_EXPIRE_SECONDS=int(os.getenv("TOKEN_EXPIRE_SECONDS", "7200")),
         TOKEN_SALT=os.getenv("TOKEN_SALT", "anshou-miniapp-access-token"),
         MQTT_ENABLED=env_bool("MQTT_ENABLED", False),
+        MQTT_AUTOSTART_DEVICES=env_bool("MQTT_AUTOSTART_DEVICES", False),
         OFFLINE_MONITOR_ENABLED=env_bool(
             "OFFLINE_MONITOR_ENABLED",
             True,

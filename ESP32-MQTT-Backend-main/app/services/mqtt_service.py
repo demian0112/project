@@ -47,6 +47,16 @@ class MqttManager:
             client.connect_async()
             return client
 
+    def remove_device(self, device_name: str) -> None:
+        with self._lock:
+            client = self._clients.pop(device_name, None)
+        if client is None:
+            return
+        try:
+            client.disconnect()
+        except Exception:
+            logger.exception("Failed to disconnect MQTT client for %s", device_name)
+
     def publish_control(
         self,
         device_name: str,

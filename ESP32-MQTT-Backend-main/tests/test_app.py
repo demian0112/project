@@ -154,6 +154,14 @@ def test_admin_login_protects_dashboard_and_api(client, app):
 
 def test_admin_device_crud(client, app):
     token = login_admin(client, app)
+    ensured_devices = []
+    removed_devices = []
+    app.extensions["device_coordinator"].mqtt.ensure_device = (
+        lambda device_name: ensured_devices.append(device_name)
+    )
+    app.extensions["device_coordinator"].mqtt.remove_device = (
+        lambda device_name: removed_devices.append(device_name)
+    )
 
     with app.app_context():
         user = User(wx_openid="wx-device-owner", nickname="Alice")
@@ -210,6 +218,7 @@ def test_admin_device_crud(client, app):
         "csi/v1/devices/esp32-001/up/csi"
     )
     assert device_data["owner_username"] == "Alice"
+    assert ensured_devices == []
 
     duplicate_device = client.post(
         "/api/devices",
@@ -241,12 +250,14 @@ def test_admin_device_crud(client, app):
     assert updated_device.status_code == 200
     assert updated_device.get_json()["device_uid"] == "esp32-001"
     assert updated_device.get_json()["status"] == "disabled"
+    assert removed_devices == ["esp32-001"]
 
     deleted_device = client.delete(
         f"/api/devices/{device_data['id']}",
         headers=csrf_headers(token),
     )
     assert deleted_device.status_code == 200
+    assert removed_devices == ["esp32-001", "esp32-001"]
 
     with app.app_context():
         assert db.session.get(Device, device_data["id"]) is None
@@ -485,6 +496,10 @@ def test_miniapp_device_ownership_and_control(client, app):
     token = login_data["access_token"]
     user_id = login_data["user"]["id"]
     published = []
+    ensured_devices = []
+    app.extensions["device_coordinator"].mqtt.ensure_device = (
+        lambda device_name: ensured_devices.append(device_name)
+    )
     app.config["MQTT_CONTROL_PUBLISHER"] = (
         lambda **message: published.append(message)
     )
@@ -511,6 +526,7 @@ def test_miniapp_device_ownership_and_control(client, app):
     assert [item["device_name"] for item in listing.get_json()["items"]] == [
         "csi-gw-001"
     ]
+    assert ensured_devices == ["csi-gw-001"]
 
     forbidden = client.get(
         "/api/v1/devices/csi-gw-other",
@@ -542,6 +558,26 @@ def test_miniapp_device_ownership_and_control(client, app):
         coordinator = app.extensions["device_coordinator"]
         coordinator.handle_mqtt_payload(
             "csi-gw-001",
+            "status",
+            {
+                "state": "uploading",
+                "session": session,
+                "uart": True,
+                "upload": True,
+                "ts": 241,
+            },
+        )
+        device = db.session.scalar(
+            db.select(Device).where(
+                Device.device_name == "csi-gw-001"
+            )
+        )
+        assert device.runtime_state == "uploading"
+        assert device.detection_state == "running"
+        assert device.current_session == session
+
+        coordinator.handle_mqtt_payload(
+            "csi-gw-001",
             "ack",
             {
                 "cmd": "control",
@@ -567,6 +603,26 @@ def test_miniapp_device_ownership_and_control(client, app):
     assert [item["action"] for item in published] == ["start", "stop"]
 
     with app.app_context():
+        coordinator.handle_mqtt_payload(
+            "csi-gw-001",
+            "status",
+            {
+                "state": "idle",
+                "session": "",
+                "uart": True,
+                "upload": False,
+                "ts": 261,
+            },
+        )
+        device = db.session.scalar(
+            db.select(Device).where(
+                Device.device_name == "csi-gw-001"
+            )
+        )
+        assert device.runtime_state == "idle"
+        assert device.detection_state == "idle"
+        assert device.current_session is None
+
         coordinator.handle_mqtt_payload(
             "csi-gw-001",
             "ack",

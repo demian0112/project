@@ -40,7 +40,8 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.extensions["device_coordinator"] = coordinator
     with app.app_context():
         if "devices" in inspect(db.engine).get_table_names():
-            coordinator.ensure_all_devices()
+            if app.config["MQTT_AUTOSTART_DEVICES"]:
+                coordinator.ensure_all_devices()
             coordinator.start_monitor()
 
     return app
