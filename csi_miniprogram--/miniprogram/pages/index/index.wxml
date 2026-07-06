@@ -1,7 +1,6 @@
 <view class="page" style="padding-top: {{statusBarHeight + 16}}px">
   <view class="page-head">
     <view>
-      <text class="page-kicker">安守 CSI</text>
       <text class="page-title">家庭设备</text>
       <text class="page-desc">查看设备状态，进入设备开始检测</text>
     </view>

@@ -5,7 +5,7 @@
     <view class="nav-placeholder"></view>
   </view>
 
-  <view wx:if="{{loading}}" class="loading-wrap"><view class="monitor-hero skeleton"></view><view class="hero-card skeleton"></view></view>
+  <view wx:if="{{loading}}" class="loading-wrap"><view class="monitor-hero skeleton"></view><view class="status-card skeleton"></view></view>
 
   <view wx:elif="{{loadError}}" class="empty-card">
     <view class="empty-icon">!</view><text class="empty-title">设备信息加载失败</text><text class="empty-desc">{{loadError}}</text>
@@ -13,19 +13,18 @@
   </view>
 
   <block wx:elif="{{device}}">
-    <view class="monitor-hero {{activeAlert ? 'monitor-alert' : ''}}">
-      <view class="monitor-top">
-        <view><text class="monitor-location">{{device.location || '未设置位置'}}</text><text class="monitor-device">{{device.display_name}}</text></view>
+    <view class="monitor-hero light-{{lightState}}">
+      <view class="monitor-state-row">
         <view class="monitor-pill state-pill-{{device.state}}"><view class="monitor-dot"></view><text>{{stateText}}</text></view>
       </view>
-      <view class="gauge-wrap">
-        <gauge-ring progress="{{device.detection_state === 'running' ? 0.88 : 0.22}}" color="{{activeAlert ? '#d94f48' : device.state === 'online' ? '#168765' : '#aab3af'}}" bgColor="#edf2ef">
-          <view class="gauge-content">
-            <view class="radar"><view class="radar-ring radar-one"></view><view class="radar-ring radar-two"></view><view class="radar-dot"></view></view>
-            <text class="gauge-title">{{activeAlert ? '检测到跌倒' : detectionText}}</text>
-            <text class="gauge-desc">{{activeAlert ? '请尽快确认安全' : device.detection_state === 'running' ? '环境状态持续分析中' : '设备准备就绪'}}</text>
-          </view>
-        </gauge-ring>
+      <view class="breath-stage">
+        <view class="breath-light">
+          <view class="breath-halo breath-halo-one"></view>
+          <view class="breath-halo breath-halo-two"></view>
+          <view class="breath-core"><view class="breath-dot"></view></view>
+        </view>
+        <text class="light-title">{{lightTitle}}</text>
+        <text class="light-desc">{{lightDesc}}</text>
       </view>
       <view class="monitor-metrics">
         <view><text class="monitor-metric-label">CSI 网络质量</text><text class="monitor-metric-value quality-{{device.network_quality}}">{{qualityLabel}}</text></view>
@@ -38,13 +37,6 @@
       <view class="alert-symbol">!</view><view class="alert-copy"><text class="alert-title">检测到跌倒事件</text><text class="alert-desc">{{alertTimeText}}</text></view><view class="detail-chevron"></view>
     </view>
     <view wx:if="{{activeAlert}}" class="alert-actions"><button class="safe-action" bindtap="onConfirmSafe">我已确认安全</button><button class="detail-action" bindtap="onAlertTap">查看告警</button></view>
-
-    <view class="section-title">设备信息</view>
-    <view class="hero-card state-{{device.state}}">
-      <view class="device-icon"><view class="antenna"></view><view class="device-led"></view></view>
-      <view class="hero-copy"><text class="location">{{device.location || '未设置位置'}}</text><text class="device-name">{{device.display_name}}</text><text class="device-id">{{device.device_name}}</text></view>
-      <view class="state-pill"><view class="state-dot"></view>{{stateText}}</view>
-    </view>
 
     <view wx:if="{{device.state === 'error'}}" class="fault-banner"><text class="fault-title">设备发生异常</text><text class="fault-desc">{{device.fault.message || device.fault_message || '请检查设备连接和供电状态'}}</text></view>
 

@@ -3,7 +3,7 @@
 
   <view wx:if="{{!authenticated}}" class="login-card">
     <view class="login-icon"></view>
-    <text class="login-title">登录后使用安守 CSI</text>
+    <text class="login-title">登录后使用设备服务</text>
     <text class="login-desc">{{loadError || '登录后可查看已绑定设备、同步告警记录和管理个人资料。'}}</text>
     <button class="login-action" loading="{{loggingIn}}" bindtap="onLogin">微信登录</button>
   </view>

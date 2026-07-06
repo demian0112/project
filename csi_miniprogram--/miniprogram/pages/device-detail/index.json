@@ -1,7 +1,4 @@
 {
   "navigationStyle": "custom",
-  "enablePullDownRefresh": true,
-  "usingComponents": {
-    "gauge-ring": "/components/gauge-ring/gauge-ring"
-  }
+  "enablePullDownRefresh": true
 }

@@ -7,7 +7,7 @@
 
   <view class="page-heading">
     <text class="page-title">我的设备</text>
-    <text class="page-desc">查看当前账号已绑定的设备信息</text>
+    <text class="page-desc">查看和编辑当前账号已绑定的设备信息</text>
   </view>
 
   <block wx:if="{{loading}}">
@@ -39,6 +39,28 @@
       <view class="divider"></view>
       <view class="info-row"><text class="info-label">设备编号</text><text class="info-value device-id">{{item.device_name}}</text></view>
       <view class="info-row"><text class="info-label">安装位置</text><text class="info-value">{{item.location || '未设置'}}</text></view>
+      <button class="edit-button" data-name="{{item.device_name}}" catchtap="onEditTap">编辑资料</button>
+    </view>
+  </view>
+
+  <view wx:if="{{editing}}" class="edit-mask" bindtap="onCancelEdit">
+    <view class="edit-sheet" catchtap="noop">
+      <view class="edit-head">
+        <text class="edit-title">编辑设备</text>
+        <text class="edit-subtitle">{{editDeviceName}}</text>
+      </view>
+      <view class="field">
+        <text class="field-label">显示名称</text>
+        <input class="field-input" value="{{editDisplayName}}" maxlength="64" placeholder="请输入设备显示名称" bindinput="onDisplayNameInput" />
+      </view>
+      <view class="field">
+        <text class="field-label">安装位置</text>
+        <textarea class="field-textarea" value="{{editLocation}}" maxlength="128" auto-height placeholder="例如：客厅、卧室、走廊" bindinput="onLocationInput"></textarea>
+      </view>
+      <view class="edit-actions">
+        <button class="cancel-button" bindtap="onCancelEdit">取消</button>
+        <button class="save-button" loading="{{saving}}" disabled="{{saving}}" bindtap="onSaveEdit">保存</button>
+      </view>
     </view>
   </view>
 </view>

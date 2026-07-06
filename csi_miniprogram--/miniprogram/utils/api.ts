@@ -25,8 +25,8 @@ export interface LoginResponse {
 
 interface RawDeviceDetail {
   device_name: string
-  display_name: string
-  location: string
+  display_name: string | null
+  location: string | null
   remark: string | null
   state: DeviceDetail['state']
   enabled: boolean
@@ -34,6 +34,11 @@ interface RawDeviceDetail {
   runtime: DeviceDetail['runtime']
   detection: DeviceDetail['detection']
   fault: DeviceDetail['fault']
+}
+
+export interface DeviceProfileUpdate {
+  display_name?: string
+  location?: string | null
 }
 
 export interface ApiError extends Error {
@@ -123,6 +128,18 @@ export async function getDevices(): Promise<DeviceSummary[]> {
 
 export async function getDeviceDetail(deviceName: string): Promise<DeviceDetail> {
   const response = await request<RawDeviceDetail>(`/api/v1/devices/${encodeURIComponent(deviceName)}`)
+  return normalizeDeviceDetail(response)
+}
+
+export async function updateDeviceInfo(deviceName: string, profile: DeviceProfileUpdate): Promise<DeviceDetail> {
+  const response = await request<RawDeviceDetail>(`/api/v1/devices/${encodeURIComponent(deviceName)}`, {
+    method: 'PATCH' as any,
+    data: profile,
+  })
+  return normalizeDeviceDetail(response)
+}
+
+function normalizeDeviceDetail(response: RawDeviceDetail): DeviceDetail {
   return {
     device_name: response.device_name,
     display_name: response.display_name,

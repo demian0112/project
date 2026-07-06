@@ -251,6 +251,52 @@ def device_detail(device_name: str):
     return jsonify(device.to_detail_dict())
 
 
+@miniapp_bp.patch("/devices/<string:device_name>")
+@token_required
+def update_device_profile(device_name: str):
+    device, error = _owned_device(device_name)
+    if error is not None:
+        return error
+
+    data = request.get_json(silent=True) or {}
+    allowed_fields = {"display_name", "location"}
+    if not allowed_fields.intersection(data):
+        return api_error(
+            "INVALID_DEVICE_PROFILE",
+            "至少需要提交 display_name 或 location",
+            400,
+        )
+
+    if "display_name" in data:
+        display_name = str(data.get("display_name") or "").strip()
+        if not display_name:
+            return api_error(
+                "INVALID_DEVICE_PROFILE",
+                "display_name 不能为空",
+                400,
+            )
+        if len(display_name) > 64:
+            return api_error(
+                "INVALID_DEVICE_PROFILE",
+                "display_name 不能超过 64 个字符",
+                400,
+            )
+        device.display_name = display_name
+
+    if "location" in data:
+        location = str(data.get("location") or "").strip()
+        if len(location) > 128:
+            return api_error(
+                "INVALID_DEVICE_PROFILE",
+                "location 不能超过 128 个字符",
+                400,
+            )
+        device.location = location or None
+
+    db.session.commit()
+    return jsonify(device.to_detail_dict())
+
+
 @miniapp_bp.post("/devices/<string:device_name>/control")
 @token_required
 def control_device(device_name: str):

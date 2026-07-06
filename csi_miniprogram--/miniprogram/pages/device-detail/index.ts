@@ -5,6 +5,7 @@ import { realtimeClient } from '../../services/realtime'
 
 const CONTROL_TIMEOUT_MS = 15000
 const CONTROL_POLL_MS = 1500
+type LightState = 'normal' | 'fall' | 'error' | 'offline'
 
 Page({
   data: {
@@ -20,6 +21,9 @@ Page({
     detectionText: '等待启动',
     qualityLabel: '暂无数据',
     lastSeenText: '暂无记录',
+    lightState: 'offline' as LightState,
+    lightTitle: '等待启动',
+    lightDesc: '设备准备就绪',
     activeAlert: null as FallEvent | null,
     alertTimeText: '',
     _pollingTimer: null as any,
@@ -104,10 +108,7 @@ Page({
         controlLoading,
         loading: false,
         loadError: '',
-        stateText: { online: '在线', offline: '离线', error: '异常' }[device.state],
-        detectionText: { idle: '等待启动', starting: '正在启动', running: '检测运行中', stopping: '正在停止' }[device.detection_state],
-        qualityLabel: qualityText(device.network_quality),
-        lastSeenText: this.formatDate(device.last_seen_at),
+        ...this.getDeviceViewState(device, this.data.activeAlert),
       })
       await this.loadLatestAlert()
     } catch (error: any) {
@@ -136,12 +137,13 @@ Page({
     }
     const action = device.detection_state === 'running' ? 'stop' : 'start'
     const pendingState = action === 'start' ? 'starting' : 'stopping'
+    const pendingDevice: DeviceDetail = { ...device, detection_state: pendingState }
     this.setData({
       controlLoading: true,
       pendingAction: action,
       pendingDeadline: Date.now() + CONTROL_TIMEOUT_MS,
-      device: { ...device, detection_state: pendingState },
-      detectionText: action === 'start' ? '正在启动' : '正在停止',
+      device: pendingDevice,
+      ...this.getDeviceViewState(pendingDevice, this.data.activeAlert),
     })
     try {
       const result = await controlDevice(device.device_name, action)
@@ -165,6 +167,7 @@ Page({
       this.setData({
         activeAlert: alert,
         alertTimeText: alert ? this.formatDate(alert.occurred_at) : '',
+        ...(this.data.device ? this.getDeviceViewState(this.data.device, alert) : {}),
       })
     } catch (error) {
       console.error('设备告警同步失败', error)
@@ -182,7 +185,10 @@ Page({
     if (!alert) return
     try {
       await updateFallEvent(alert.id, 'confirmed')
-      this.setData({ activeAlert: null })
+      this.setData({
+        activeAlert: null,
+        ...(this.data.device ? this.getDeviceViewState(this.data.device, null) : {}),
+      })
       wx.showToast({ title: '已确认安全', icon: 'success' })
     } catch (error: any) {
       wx.showToast({ title: (error && error.message) || '提交失败', icon: 'none' })
@@ -221,6 +227,38 @@ Page({
 
   onBack() { wx.navigateBack() },
   onRetry() { this.loadDevice() },
+
+  getDeviceViewState(device: DeviceDetail, alert: FallEvent | null) {
+    const stateText = { online: '在线', offline: '离线', error: '异常' }[device.state]
+    const detectionText = { idle: '等待启动', starting: '正在启动', running: '检测运行中', stopping: '正在停止' }[device.detection_state]
+    let lightState: LightState = 'normal'
+    let lightTitle = detectionText
+    let lightDesc = device.detection_state === 'running' ? '环境状态持续分析中' : '设备准备就绪'
+
+    if (alert) {
+      lightState = 'fall'
+      lightTitle = '检测到跌倒'
+      lightDesc = '请尽快确认安全'
+    } else if (device.state === 'offline') {
+      lightState = 'offline'
+      lightTitle = '设备离线'
+      lightDesc = '等待设备重新上线'
+    } else if (device.state === 'error' || device.fault.code) {
+      lightState = 'error'
+      lightTitle = '设备异常'
+      lightDesc = device.fault.message || device.fault_message || '请检查设备连接和供电状态'
+    }
+
+    return {
+      stateText,
+      detectionText,
+      qualityLabel: qualityText(device.network_quality),
+      lastSeenText: this.formatDate(device.last_seen_at),
+      lightState,
+      lightTitle,
+      lightDesc,
+    }
+  },
 
   onRealtimeEvent(event: RealtimeEvent) {
     if (event.device_name !== this.data.deviceName) return
