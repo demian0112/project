@@ -7,14 +7,16 @@ from dataclasses import dataclass
 from typing import Any
 
 
-# hardware代码交互逻辑说明.md defines the compact v2 batch as an
-# 8-byte batch header followed by 16-byte frame headers.
-BATCH_HEADER = struct.Struct("<BBBBI")
+# C板CSI上传MQTT数据格式说明.md defines the current CSIB v2 batch as a
+# 28-byte batch header followed by 16-byte frame headers.
+BATCH_HEADER = struct.Struct("<4sBBBBIqq")
 FRAME_HEADER = struct.Struct("<IqbBH")
-SUPPORTED_FORMAT = "csib64-v2-1s"
-SUPPORTED_MAGICS = {(ord("C"), ord("S")), (0xA5, 0x5A)}
+SUPPORTED_FORMAT = "csib64-v2"
+SUPPORTED_MAGIC = b"CSIB"
+SUPPORTED_BINARY_VERSION = 0x01
+MAX_BATCH_FRAMES = 80
 MAX_BINARY_BYTES = 512 * 1024
-MAX_FRAME_BYTES = 4096
+MAX_FRAME_BYTES = 384
 
 
 class CsiPayloadError(ValueError):
@@ -34,6 +36,7 @@ class CsiFrame:
 class CsiBatch:
     session: str
     batch_no: int
+    sample_hz: int
     frames: tuple[CsiFrame, ...]
     seq0: int
     seq1: int
@@ -52,6 +55,7 @@ class CsiBatch:
         return {
             "session": self.session,
             "batch": self.batch_no,
+            "sample_hz": self.sample_hz,
             "seq0": self.seq0,
             "seq1": self.seq1,
             "ts0": self.ts0,
@@ -72,7 +76,7 @@ class CsiBatch:
 
 
 def decode_csi_payload(payload: dict[str, Any]) -> CsiBatch:
-    """Decode and cross-check a ``csib64-v2-1s`` MQTT payload."""
+    """Decode and cross-check a ``csib64-v2`` CSIB MQTT payload."""
     session = str(payload.get("session") or "").strip()
     if not session:
         raise CsiPayloadError("session is required")
@@ -80,7 +84,12 @@ def decode_csi_payload(payload: dict[str, Any]) -> CsiBatch:
         raise CsiPayloadError("unsupported CSI format")
 
     batch_no = _required_int(payload, "batch", minimum=0)
-    frame_count = _required_int(payload, "frames", minimum=1, maximum=255)
+    frame_count = _required_int(
+        payload,
+        "frames",
+        minimum=1,
+        maximum=MAX_BATCH_FRAMES,
+    )
     seq0 = _required_int(payload, "seq0", minimum=0)
     seq1 = _required_int(payload, "seq1", minimum=seq0)
     ts0 = _required_int(payload, "ts0", minimum=0)
@@ -91,14 +100,6 @@ def decode_csi_payload(payload: dict[str, Any]) -> CsiBatch:
         minimum=BATCH_HEADER.size + FRAME_HEADER.size,
         maximum=MAX_BINARY_BYTES,
     )
-    average_rssi = _required_int(payload, "rssi", minimum=-128, maximum=127)
-    invalid_count = _required_int(
-        payload,
-        "invalid",
-        minimum=0,
-        maximum=frame_count,
-    )
-
     encoded = payload.get("data")
     if not isinstance(encoded, str) or not encoded:
         raise CsiPayloadError("data must be a non-empty Base64 string")
@@ -111,17 +112,30 @@ def decode_csi_payload(payload: dict[str, Any]) -> CsiBatch:
     if len(binary) != binary_bytes:
         raise CsiPayloadError("bytes does not match decoded data length")
 
-    magic0, magic1, version, binary_frame_count, binary_batch_no = (
-        BATCH_HEADER.unpack_from(binary, 0)
-    )
-    if (magic0, magic1) not in SUPPORTED_MAGICS:
+    (
+        magic,
+        version,
+        binary_frame_count,
+        sample_hz,
+        reserved,
+        binary_batch_no,
+        start_ts_us,
+        end_ts_us,
+    ) = BATCH_HEADER.unpack_from(binary, 0)
+    if magic != SUPPORTED_MAGIC:
         raise CsiPayloadError("invalid CSI batch magic")
-    if version != 0x02:
+    if version != SUPPORTED_BINARY_VERSION:
         raise CsiPayloadError("unsupported CSI binary version")
     if binary_frame_count != frame_count:
         raise CsiPayloadError("frames does not match binary frame count")
+    if sample_hz <= 0:
+        raise CsiPayloadError("sample_hz must be positive")
+    if reserved != 0:
+        raise CsiPayloadError("reserved batch header field must be 0")
     if binary_batch_no != batch_no:
         raise CsiPayloadError("batch does not match binary batch number")
+    if start_ts_us != ts0 or end_ts_us != ts1:
+        raise CsiPayloadError("ts0/ts1 do not match batch header")
 
     offset = BATCH_HEADER.size
     frames: list[CsiFrame] = []
@@ -134,6 +148,8 @@ def decode_csi_payload(payload: dict[str, Any]) -> CsiBatch:
         offset += FRAME_HEADER.size
         if csi_len <= 0 or csi_len > MAX_FRAME_BYTES:
             raise CsiPayloadError("invalid CSI frame length")
+        if first_word_invalid not in {0, 1}:
+            raise CsiPayloadError("invalid first_word_invalid flag")
         end = offset + csi_len
         if end > len(binary):
             raise CsiPayloadError("truncated CSI frame payload")
@@ -164,12 +180,13 @@ def decode_csi_payload(payload: dict[str, Any]) -> CsiBatch:
         raise CsiPayloadError("seq0/seq1 do not match decoded frames")
     if frames[0].timestamp_us != ts0 or frames[-1].timestamp_us != ts1:
         raise CsiPayloadError("ts0/ts1 do not match decoded frames")
-    if sum(frame.first_word_invalid for frame in frames) != invalid_count:
-        raise CsiPayloadError("invalid count does not match decoded frames")
+    average_rssi = round(sum(frame.rssi for frame in frames) / len(frames))
+    invalid_count = sum(frame.first_word_invalid for frame in frames)
 
     return CsiBatch(
         session=session,
         batch_no=batch_no,
+        sample_hz=sample_hz,
         frames=tuple(frames),
         seq0=seq0,
         seq1=seq1,

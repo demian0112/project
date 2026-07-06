@@ -15,11 +15,14 @@ def csi_payload(session, batch_no, seq0):
     )
     parts = [
         BATCH_HEADER.pack(
-            ord("C"),
-            ord("S"),
-            0x02,
+            b"CSIB",
+            0x01,
             len(sequences),
+            30,
+            0,
             batch_no,
+            timestamps[0],
+            timestamps[-1],
         )
     ]
     for sequence, timestamp in zip(sequences, timestamps):
@@ -45,10 +48,8 @@ def csi_payload(session, batch_no, seq0):
         "seq1": sequences[-1],
         "ts0": timestamps[0],
         "ts1": timestamps[-1],
-        "fmt": "csib64-v2-1s",
+        "fmt": "csib64-v2",
         "bytes": len(binary),
-        "rssi": -45,
-        "invalid": 0,
         "data": base64.b64encode(binary).decode("ascii"),
         "ts": batch_no,
     }
