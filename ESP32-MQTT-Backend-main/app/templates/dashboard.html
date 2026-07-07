@@ -6,9 +6,9 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <meta
       name="description"
-      content="安守 CSI 跌倒检测系统管理员控制台"
+      content="Wifi跌倒检测系统管理员控制台"
     >
-    <title>设备管理中心 · 安守 CSI</title>
+    <title>设备管理中心 · Wifi跌倒检测</title>
     <link
       rel="stylesheet"
       href="{{ url_for('static', filename='css/dashboard.css') }}"
@@ -24,13 +24,16 @@
         <a
           class="brand"
           href="{{ url_for('site.dashboard') }}"
-          aria-label="安守 CSI 管理首页"
+          aria-label="管理首页"
         >
-          <span class="brand-mark" aria-hidden="true">
-            <span class="brand-wave"></span>
+          <span class="brand-mark brand-image" aria-hidden="true">
+            <img
+              src="{{ url_for('static', filename='image/icon.png') }}"
+              alt=""
+            >
           </span>
           <span class="brand-copy">
-            <strong>安守 CSI</strong>
+            <strong>Wifi跌倒检测</strong>
             <small>FALL DETECTION</small>
           </span>
         </a>

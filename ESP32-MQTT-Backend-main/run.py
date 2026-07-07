@@ -1,9 +1,11 @@
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 from app import create_app
 
 
-load_dotenv()
+load_dotenv(Path(__file__).with_name(".env"), override=True)
 
 
 app = create_app()

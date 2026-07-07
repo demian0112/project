@@ -7,7 +7,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy.orm import joinedload
 
 from .extensions import db
-from .models import Device, FallEvent, User, utc_now
+from .models import Device, FallEvent, User, WxSubscription, utc_now
 from .services.device_state_service import ControlError
 from .services.token_service import (
     AccessTokenError,
@@ -19,6 +19,11 @@ from .services.wechat_service import (
     WeChatPhoneError,
     exchange_phone_code,
     exchange_wechat_code,
+)
+from .services.wechat_notify_service import (
+    FALL_ALERT_SCENE,
+    ALLOWED_SUBSCRIPTION_STATUSES,
+    record_subscription,
 )
 
 
@@ -87,6 +92,7 @@ def api_index():
             "resources": [
                 "/api/v1/auth/wechat-login",
                 "/api/v1/me",
+                "/api/v1/wechat/subscriptions",
                 "/api/v1/devices",
                 "/api/v1/fall-events",
                 "/ws/v1/events",
@@ -222,6 +228,93 @@ def update_profile():
 
     db.session.commit()
     return jsonify(user.to_public_dict())
+
+
+@miniapp_bp.get("/wechat/subscriptions")
+@token_required
+def get_wechat_subscriptions():
+    template_id = str(
+        current_app.config.get("WECHAT_FALL_ALERT_TEMPLATE_ID") or ""
+    ).strip()
+    subscription = None
+    if template_id:
+        subscription = db.session.scalar(
+            db.select(WxSubscription).where(
+                WxSubscription.user_id == g.current_miniapp_user.id,
+                WxSubscription.scene == FALL_ALERT_SCENE,
+                WxSubscription.template_id == template_id,
+            )
+        )
+
+    remaining_count = 1 if subscription and subscription.status == "accept" else 0
+    return jsonify(
+        {
+            "ok": True,
+            "enabled": bool(current_app.config["WECHAT_NOTIFY_ENABLED"]),
+            "scene": FALL_ALERT_SCENE,
+            "template_id": template_id,
+            "status": subscription.status if subscription else "",
+            "remaining_count": remaining_count,
+            "last_subscribed_at": (
+                subscription.last_subscribed_at.isoformat()
+                if subscription and subscription.last_subscribed_at
+                else None
+            ),
+        }
+    )
+
+
+@miniapp_bp.post("/wechat/subscriptions")
+@token_required
+def register_wechat_subscription():
+    data = request.get_json(silent=True) or {}
+    scene = str(data.get("scene") or FALL_ALERT_SCENE).strip()
+    template_id = str(data.get("template_id") or "").strip()
+    status = str(data.get("status") or "").strip().lower()
+    expected_template_id = str(
+        current_app.config.get("WECHAT_FALL_ALERT_TEMPLATE_ID") or ""
+    ).strip()
+
+    if scene != FALL_ALERT_SCENE:
+        return api_error(
+            "INVALID_SUBSCRIPTION_SCENE",
+            "scene must be fall_alert",
+            400,
+        )
+    if not expected_template_id:
+        return api_error(
+            "WECHAT_TEMPLATE_NOT_CONFIGURED",
+            "WECHAT_FALL_ALERT_TEMPLATE_ID is not configured",
+            503,
+        )
+    if template_id != expected_template_id:
+        return api_error(
+            "INVALID_TEMPLATE_ID",
+            "template_id does not match backend configuration",
+            400,
+        )
+    if status not in ALLOWED_SUBSCRIPTION_STATUSES:
+        return api_error(
+            "INVALID_SUBSCRIPTION_STATUS",
+            "status must be accept/reject/ban/filter",
+            400,
+        )
+
+    subscription = record_subscription(
+        g.current_miniapp_user,
+        scene,
+        template_id,
+        status,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "scene": subscription.scene,
+            "template_id": subscription.template_id,
+            "status": subscription.status,
+            "remaining_count": subscription.remaining_count,
+        }
+    )
 
 
 @miniapp_bp.get("/devices")

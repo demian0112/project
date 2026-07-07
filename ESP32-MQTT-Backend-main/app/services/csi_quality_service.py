@@ -20,14 +20,36 @@ class CsiPoint:
     received_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class CsiQualityResult:
+    quality: str
+    seq_reset: bool = False
+    previous_seq1: int | None = None
+    new_seq0: int | None = None
+    gap_seconds: float | None = None
+
+
 class CsiQualityTracker:
     """Estimate CSI quality from real frame ranges over a rolling window."""
 
-    def __init__(self, max_points: int = 10) -> None:
+    def __init__(
+        self,
+        max_points: int = 10,
+        *,
+        expected_interval_seconds: float = 1.5,
+        soft_timeout_seconds: float = 8.0,
+        recovery_grace_seconds: float = 20.0,
+        seq_reset_max: int = 5,
+    ) -> None:
         self._points: dict[tuple[str, str], deque[CsiPoint]] = defaultdict(
             lambda: deque(maxlen=max_points)
         )
         self._lock = threading.RLock()
+        self.expected_interval_seconds = expected_interval_seconds
+        self.soft_timeout_seconds = soft_timeout_seconds
+        self.recovery_grace_seconds = recovery_grace_seconds
+        self.normal_interval_seconds = max(3.0, expected_interval_seconds * 2)
+        self.seq_reset_max = seq_reset_max
 
     def add(
         self,
@@ -35,22 +57,47 @@ class CsiQualityTracker:
         session: str,
         batch: CsiBatch,
         received_at: datetime,
-    ) -> str:
+    ) -> CsiQualityResult:
         key = (device_name, session)
         with self._lock:
             points = self._points[key]
-            points.append(
-                CsiPoint(
-                    batch_no=batch.batch_no,
-                    seq0=batch.seq0,
-                    seq1=batch.seq1,
-                    frame_count=batch.frame_count,
-                    invalid_count=batch.invalid_count,
-                    ts0=batch.ts0,
-                    received_at=received_at,
+            point = CsiPoint(
+                batch_no=batch.batch_no,
+                seq0=batch.seq0,
+                seq1=batch.seq1,
+                frame_count=batch.frame_count,
+                invalid_count=batch.invalid_count,
+                ts0=batch.ts0,
+                received_at=received_at,
+            )
+            seq_reset = False
+            previous_seq1 = None
+            gap_seconds = None
+            if points:
+                previous = points[-1]
+                gap_seconds = _point_interval(previous, point)
+                if batch.seq0 <= previous.seq1 and batch.seq0 <= self.seq_reset_max:
+                    seq_reset = True
+                    previous_seq1 = previous.seq1
+                    points.clear()
+
+            points.append(point)
+            if seq_reset:
+                return CsiQualityResult(
+                    quality="fair",
+                    seq_reset=True,
+                    previous_seq1=previous_seq1,
+                    new_seq0=batch.seq0,
+                    gap_seconds=gap_seconds,
+                )
+            return CsiQualityResult(
+                quality=_quality(
+                    list(points),
+                    normal_interval_seconds=self.normal_interval_seconds,
+                    soft_timeout_seconds=self.soft_timeout_seconds,
+                    recovery_grace_seconds=self.recovery_grace_seconds,
                 )
             )
-            return _quality(list(points))
 
     def clear(self, device_name: str, session: str | None = None) -> None:
         with self._lock:
@@ -63,7 +110,13 @@ class CsiQualityTracker:
                 self._points.pop(key, None)
 
 
-def _quality(points: list[CsiPoint]) -> str:
+def _quality(
+    points: list[CsiPoint],
+    *,
+    normal_interval_seconds: float,
+    soft_timeout_seconds: float,
+    recovery_grace_seconds: float,
+) -> str:
     if len(points) < 2:
         return "unknown"
 
@@ -86,14 +139,7 @@ def _quality(points: list[CsiPoint]) -> str:
             non_monotonic = True
         else:
             missing_frames += sequence_gap
-        device_interval = (current.ts0 - previous.ts0) / 1_000_000
-        intervals.append(
-            device_interval
-            if device_interval > 0
-            else (
-                current.received_at - previous.received_at
-            ).total_seconds()
-        )
+        intervals.append(_point_interval(previous, current))
 
     valid_intervals = [value for value in intervals if value > 0]
     if not valid_intervals or received_frames <= 0:
@@ -103,23 +149,40 @@ def _quality(points: list[CsiPoint]) -> str:
     loss_rate = missing_frames / max(1, expected_frames)
     invalid_rate = invalid_frames / received_frames
     average_interval = mean(valid_intervals)
+    max_interval = max(valid_intervals)
     unstable_intervals = sum(
-        value < 0.4 or value > 2.5 for value in valid_intervals
+        value < 0.4 or value > soft_timeout_seconds
+        for value in valid_intervals
+    )
+    stretched_intervals = sum(
+        normal_interval_seconds < value <= soft_timeout_seconds
+        for value in valid_intervals
     )
 
     if (
         not non_monotonic
-        and loss_rate <= 0.02
-        and invalid_rate <= 0.02
+        and loss_rate <= 0.05
+        and invalid_rate <= 0.05
         and unstable_intervals == 0
+        and stretched_intervals == 0
     ):
         return "good"
     if (
         not non_monotonic
-        and loss_rate <= 0.10
-        and invalid_rate <= 0.10
-        and average_interval <= 4
+        and loss_rate <= 0.20
+        and invalid_rate <= 0.15
+        and average_interval <= soft_timeout_seconds
+        and max_interval <= soft_timeout_seconds
         and unstable_intervals <= max(1, len(valid_intervals) // 3)
     ):
         return "fair"
+    if max_interval <= recovery_grace_seconds:
+        return "poor"
     return "poor"
+
+
+def _point_interval(previous: CsiPoint, current: CsiPoint) -> float:
+    device_interval = (current.ts0 - previous.ts0) / 1_000_000
+    if device_interval > 0:
+        return device_interval
+    return (current.received_at - previous.received_at).total_seconds()

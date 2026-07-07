@@ -3,7 +3,15 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -102,6 +110,14 @@ class User(db.Model):
         cascade="all, delete-orphan",
     )
     fall_events: Mapped[list[FallEvent]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    wx_subscriptions: Mapped[list[WxSubscription]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    wx_notify_logs: Mapped[list[WxNotifyLog]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -268,6 +284,11 @@ class Device(db.Model):
 
     def to_dict(self) -> dict:
         """Administrator representation kept compatible with the current UI."""
+        owner_username = (
+            self.owner.admin_display_name
+            if self.owner is not None
+            else f"Missing user #{self.owner_user_id}"
+        )
         return {
             "id": self.id,
             "device_uid": self.device_name,
@@ -283,7 +304,8 @@ class Device(db.Model):
             "fault_code": self.fault_code,
             "fault_message": self.fault_message,
             "owner_id": self.owner_user_id,
-            "owner_username": self.owner.admin_display_name,
+            "owner_username": owner_username,
+            "owner_missing": self.owner is None,
             "location": self.location,
             "remark": self.remark,
             "last_seen_at": isoformat(self.last_seen_at),
@@ -379,6 +401,23 @@ class FallEvent(db.Model):
         DateTime(timezone=True),
         nullable=True,
     )
+    wechat_notified: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    wechat_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    wechat_notify_errcode: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    wechat_notify_errmsg: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
     handled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -400,11 +439,15 @@ class FallEvent(db.Model):
     device: Mapped[Device] = relationship(back_populates="fall_events")
 
     def to_public_dict(self) -> dict:
+        device_display_name = (
+            self.device.display_name if self.device is not None else None
+        )
+        device_location = self.device.location if self.device is not None else None
         return {
             "id": self.id,
             "device_name": self.device_name,
-            "display_name": self.device.display_name,
-            "location": self.device.location,
+            "display_name": device_display_name,
+            "location": device_location,
             "result": self.result,
             "occurred_at": isoformat(self.occurred_at),
             "network_quality": self.network_quality,
@@ -415,15 +458,136 @@ class FallEvent(db.Model):
 
     def to_admin_dict(self) -> dict:
         item = self.to_public_dict()
+        owner_name = (
+            self.user.admin_display_name
+            if self.user is not None
+            else f"Missing user #{self.user_id}"
+        )
         item.update(
             {
                 "user_id": self.user_id,
-                "owner_name": self.user.admin_display_name,
+                "owner_name": owner_name,
+                "owner_missing": self.user is None,
                 "session": self.session,
                 "notified": self.notified,
                 "notified_at": isoformat(self.notified_at),
+                "wechat_notified": self.wechat_notified,
+                "wechat_notified_at": isoformat(self.wechat_notified_at),
+                "wechat_notify_errcode": self.wechat_notify_errcode,
+                "wechat_notify_errmsg": self.wechat_notify_errmsg,
                 "created_at": isoformat(self.created_at),
                 "updated_at": isoformat(self.updated_at),
             }
         )
         return item
+
+
+class WxSubscription(db.Model):
+    """A user's reusable WeChat subscribe-message grant for one template."""
+
+    __tablename__ = "wx_subscriptions"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "scene",
+            "template_id",
+            name="uq_wx_subscription_user_scene_template",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    scene: Mapped[str] = mapped_column(
+        String(40),
+        default="fall_alert",
+        nullable=False,
+    )
+    template_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="accept",
+        nullable=False,
+    )
+    remaining_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+    last_subscribed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    user: Mapped[User] = relationship(back_populates="wx_subscriptions")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "scene": self.scene,
+            "template_id": self.template_id,
+            "status": self.status,
+            "remaining_count": self.remaining_count,
+            "last_subscribed_at": isoformat(self.last_subscribed_at),
+            "created_at": isoformat(self.created_at),
+            "updated_at": isoformat(self.updated_at),
+        }
+
+
+class WxNotifyLog(db.Model):
+    """A redacted audit record for each WeChat notification attempt."""
+
+    __tablename__ = "wx_notify_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    device_id: Mapped[int | None] = mapped_column(
+        ForeignKey("devices.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    fall_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("fall_events.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    scene: Mapped[str] = mapped_column(
+        String(40),
+        default="fall_alert",
+        nullable=False,
+    )
+    template_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    openid_masked: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    errcode: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    errmsg: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    triggered_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+
+    user: Mapped[User] = relationship(back_populates="wx_notify_logs")

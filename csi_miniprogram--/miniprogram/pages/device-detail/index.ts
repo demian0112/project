@@ -1,6 +1,14 @@
 import { runtimeConfig } from '../../config/env'
 import { DeviceDetail, FallEvent, RealtimeEvent } from '../../models/domain'
-import { controlDevice, getDeviceDetail, getFallEvents, qualityText, updateFallEvent } from '../../utils/api'
+import type { WechatSubscriptionStatusValue } from '../../utils/api'
+import {
+  controlDevice,
+  getDeviceDetail,
+  getFallEvents,
+  qualityText,
+  registerWechatSubscription,
+  updateFallEvent,
+} from '../../utils/api'
 import { realtimeClient } from '../../services/realtime'
 
 const CONTROL_TIMEOUT_MS = 15000
@@ -136,6 +144,10 @@ Page({
       return
     }
     const action = device.detection_state === 'running' ? 'stop' : 'start'
+    if (action === 'start') {
+      await this.promptFallAlertSubscriptionBeforeStart()
+      if (this.data.controlLoading) return
+    }
     const pendingState = action === 'start' ? 'starting' : 'stopping'
     const pendingDevice: DeviceDetail = { ...device, detection_state: pendingState }
     this.setData({
@@ -155,6 +167,54 @@ Page({
       wx.showToast({ title: (error && error.message) || '控制失败', icon: 'none' })
       await this.loadDevice()
     }
+  },
+
+  async promptFallAlertSubscriptionBeforeStart() {
+    const templateId = runtimeConfig.subscribeTemplateIds.fallAlert || runtimeConfig.subscribeTemplateId
+    if (!templateId || typeof wx.requestSubscribeMessage !== 'function') return
+
+    const shouldEnable = await new Promise<boolean>((resolve) => {
+      wx.showModal({
+        title: '开启跌倒提醒',
+        content: '启动检测前建议开启微信提醒，检测到跌倒时会通知你。',
+        confirmText: '开启',
+        cancelText: '跳过',
+        success: (result) => resolve(Boolean(result.confirm)),
+        fail: () => resolve(false),
+      })
+    })
+    if (!shouldEnable) return
+
+    try {
+      const status = await this.requestFallAlertSubscription(templateId)
+      wx.showToast({
+        title: status === 'accept' ? '提醒已开启' : '未开启提醒',
+        icon: status === 'accept' ? 'success' : 'none',
+      })
+    } catch (error) {
+      console.error('启动前订阅跌倒提醒失败', error)
+      wx.showToast({ title: '提醒开启失败，将继续启动', icon: 'none' })
+    }
+  },
+
+  async requestFallAlertSubscription(templateId: string): Promise<WechatSubscriptionStatusValue> {
+    const status = await new Promise<WechatSubscriptionStatusValue>((resolve, reject) => {
+      wx.requestSubscribeMessage({
+        tmplIds: [templateId],
+        success: (result) => {
+          resolve(String(
+            (result as Record<string, unknown>)[templateId] || 'reject',
+          ) as WechatSubscriptionStatusValue)
+        },
+        fail: reject,
+      })
+    })
+    await registerWechatSubscription({
+      scene: 'fall_alert',
+      template_id: templateId,
+      status,
+    })
+    return status
   },
 
   async loadLatestAlert() {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy.exc import IntegrityError
@@ -8,7 +9,9 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from .auth import admin_required, csrf_is_valid
 from .extensions import db
-from .models import Device, FallEvent, User, utc_now
+from .models import Device, FallEvent, User, isoformat, utc_now
+from .services.wechat_notify_service import send_fall_alert
+from .services.websocket_service import websocket_hub
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -240,6 +243,116 @@ def device_detail(device_id: int):
             device.device_name
         )
     return jsonify(device.to_dict())
+
+
+@api_bp.post("/devices/<int:device_id>/simulate-fall")
+def simulate_device_fall(device_id: int):
+    device = db.session.get(
+        Device,
+        device_id,
+        options=[joinedload(Device.owner)],
+    )
+    if device is None:
+        return error_response("device not found", 404)
+    if not device.owner_user_id:
+        return error_response(
+            "device is not bound to a user; cannot simulate fall alert",
+            400,
+        )
+    user = device.owner
+    if user is None:
+        return error_response(
+            "device owner does not exist; cannot simulate fall alert",
+            400,
+        )
+    if not user.wx_openid:
+        return error_response(
+            "device owner has no wx_openid; ask the user to login first",
+            400,
+        )
+
+    data = request.get_json(silent=True) or {}
+    remark = str(
+        data.get("remark") or "admin simulated fall trigger"
+    ).strip()
+    if len(remark) > 1000:
+        return error_response("remark is too long", 400)
+    send_wechat = bool(data.get("send_wechat", True))
+    now = utc_now()
+    event = FallEvent(
+        user_id=user.id,
+        device_id=device.id,
+        device_name=device.device_name,
+        session=f"admin-simulated-{uuid4().hex}",
+        result=1,
+        network_quality=device.network_quality or "unknown",
+        occurred_at=now,
+        status="pending",
+        notified=True,
+        notified_at=now,
+        remark=remark,
+    )
+    db.session.add(event)
+    db.session.commit()
+
+    delivered = websocket_hub.push_to_user(
+        user.id,
+        "detection.fall-result",
+        device.device_name,
+        {
+            "fall_event_id": event.id,
+            "device_id": device.id,
+            "device_name": device.device_name,
+            "session": event.session,
+            "result": 1,
+            "fall_detected": True,
+            "status": event.status,
+            "network_quality": event.network_quality,
+            "occurred_at": isoformat(event.occurred_at),
+            "triggered_by": "admin",
+        },
+    )
+
+    if send_wechat:
+        wechat = send_fall_alert(event.id, triggered_by="admin")
+    else:
+        wechat = {
+            "enabled": bool(current_app.config["WECHAT_NOTIFY_ENABLED"]),
+            "ok": True,
+            "sent": False,
+            "errcode": None,
+            "errmsg": "",
+            "reason": "skipped_by_request",
+            "remaining_count": None,
+        }
+
+    message = (
+        "simulated fall event created"
+        if wechat.get("sent") or not send_wechat
+        else "simulated fall event created, but WeChat notify was not sent"
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "message": message,
+            "fall_event": {
+                "id": event.id,
+                "device_id": device.id,
+                "device_name": device.device_name,
+                "display_name": device.display_name,
+                "location": device.location,
+                "status": event.status,
+                "occurred_at": isoformat(event.occurred_at),
+                "network_quality": event.network_quality,
+                "remark": event.remark,
+            },
+            "websocket": {
+                "event": "detection.fall-result",
+                "delivered": delivered,
+            },
+            "wechat": wechat,
+        }
+    ), 201
 
 
 @api_bp.get("/fall-events")

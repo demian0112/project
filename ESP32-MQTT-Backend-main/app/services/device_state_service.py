@@ -58,7 +58,15 @@ class DeviceCoordinator:
 
     def __init__(self, app) -> None:
         self.app = app
-        self.quality = CsiQualityTracker()
+        self.quality = CsiQualityTracker(
+            expected_interval_seconds=float(
+                app.config["CSI_EXPECTED_INTERVAL_SECONDS"]
+            ),
+            soft_timeout_seconds=float(app.config["CSI_SOFT_TIMEOUT_SECONDS"]),
+            recovery_grace_seconds=float(
+                app.config["CSI_RECOVERY_GRACE_SECONDS"]
+            ),
+        )
         self.mqtt = MqttManager(app, self.handle_mqtt_payload)
         self._csi_windows: dict[
             tuple[str, str], deque[dict[str, Any]]
@@ -70,6 +78,8 @@ class DeviceCoordinator:
         self._fall_emitted: set[tuple[str, str]] = set()
         self._fault_stop_requested: set[tuple[str, str]] = set()
         self._last_fault_event: dict[tuple[str, str], float] = {}
+        self._parse_error_count: dict[tuple[str, str], int] = {}
+        self._last_timeout_log: dict[tuple[str, str, str], float] = {}
         self._idempotency: dict[
             tuple[int, str],
             tuple[float, str, str, dict[str, Any]],
@@ -157,17 +167,6 @@ class DeviceCoordinator:
         if device.state != "online":
             raise ControlError("DEVICE_OFFLINE", "设备离线，无法启动检测", 409)
 
-        last_status_at = _aware(device.last_status_at)
-        status_timeout = self.app.config["STATUS_TIMEOUT_SECONDS"]
-        if (
-            last_status_at is None
-            or (utc_now() - last_status_at).total_seconds() > status_timeout
-        ):
-            raise ControlError(
-                "STATUS_TIMEOUT",
-                "设备运行状态已超时，请稍后重试",
-                409,
-            )
         if device.detection_state != "idle":
             raise ControlError(
                 "CONTROL_BUSY",
@@ -183,6 +182,8 @@ class DeviceCoordinator:
                 "start",
                 session,
                 command_id,
+                reason="user_start",
+                source="user",
             )
         except MqttUnavailable as exc:
             raise ControlError(
@@ -191,9 +192,23 @@ class DeviceCoordinator:
                 503,
             ) from exc
 
+        now = utc_now()
+
         device.current_session = session
         device.detection_state = "starting"
+        device.runtime_state = "uploading"
+        device.state = "online"
+        device.last_seen_at = now
+        device.last_online_at = now
         device.network_quality = "unknown"
+
+        logger.info(
+            "START_MARK_ONLINE device=%s session=%s last_seen_at=%s",
+            device.device_name,
+            session,
+            isoformat(now),
+        )
+
         db.session.commit()
 
         return {
@@ -231,6 +246,8 @@ class DeviceCoordinator:
                 "stop",
                 session,
                 command_id,
+                reason="user_stop",
+                source="user",
             )
         except MqttUnavailable as exc:
             raise ControlError(
@@ -303,6 +320,8 @@ class DeviceCoordinator:
         if online:
             device.state = "online"
             device.last_online_at = now
+            if device.runtime_state == "fault":
+                device.runtime_state = "idle"
             device.fault_code = None
             device.fault_message = None
             self._fault_stop_requested = {
@@ -311,6 +330,27 @@ class DeviceCoordinator:
                 if key[0] != device.device_name
             }
         else:
+            hard_timeout = float(self.app.config["CSI_HARD_TIMEOUT_SECONDS"])
+
+            if self._is_running_like(device, now):
+                last_signal = self._last_running_signal_at(device)
+                gap = (
+                    (now - last_signal).total_seconds()
+                    if last_signal is not None
+                    else None
+                )
+                if gap is not None and gap <= hard_timeout:
+                    logger.warning(
+                        "IGNORE_TRANSIENT_OFFLINE device=%s session=%s gap=%.1f "
+                        "action=keep_running",
+                        device.device_name,
+                        device.current_session,
+                        gap,
+                    )
+                    device.last_seen_at = now
+                    db.session.commit()
+                    return
+
             old_session = device.current_session
             device.state = "offline"
             device.detection_state = "idle"
@@ -386,21 +426,24 @@ class DeviceCoordinator:
             device.last_online_at = now
 
         if runtime_state == "uploading":
-            if reported_session and (
-                not device.current_session
-                or device.detection_state not in {"starting", "stopping"}
+            if (
+                reported_session
+                and device.current_session
+                and reported_session != device.current_session
             ):
-                device.current_session = reported_session
-            if device.detection_state != "stopping":
-                device.detection_state = (
-                    "starting"
-                    if (
-                        reported_session
-                        and device.current_session
-                        and reported_session != device.current_session
-                    )
-                    else "running"
+                logger.info(
+                    "Ignored uploading status with stale session for %s",
+                    device.device_name,
                 )
+                db.session.commit()
+                return
+            if reported_session and not device.current_session:
+                device.current_session = reported_session
+            if (
+                device.detection_state in {"starting", "running"}
+                or device.current_session
+            ) and device.detection_state != "stopping":
+                device.detection_state = "running"
         elif runtime_state == "booting":
             device.detection_state = "idle"
             device.current_session = None
@@ -408,7 +451,7 @@ class DeviceCoordinator:
             self._clear_session(device.device_name, old_session)
         elif (
             runtime_state == "idle"
-            and device.detection_state == "stopping"
+            and device.detection_state in {"starting", "running", "stopping"}
         ):
             device.detection_state = "idle"
             device.current_session = None
@@ -549,46 +592,70 @@ class DeviceCoordinator:
         device: Device,
         payload: dict[str, Any],
     ) -> None:
-        session = str(payload.get("session") or "")
+        session = str(payload.get("session") or "").strip()
         if (
-            device.state != "online"
+            device.state == "error"
+            or device.runtime_state == "fault"
             or device.detection_state not in {"starting", "running"}
-            or not device.current_session
-            or session != device.current_session
         ):
+            return
+        if not device.current_session and session:
+            device.current_session = session
+        if not device.current_session or session != device.current_session:
+            logger.info(
+                "Ignored CSI with stale session for %s",
+                device.device_name,
+            )
             return
 
         try:
             batch = decode_csi_payload(payload)
         except CsiPayloadError as exc:
-            logger.warning(
-                "Ignored invalid CSI batch for %s: %s",
-                device.device_name,
-                exc,
-            )
+            self._record_csi_parse_error(device, session, str(exc))
             return
 
         now = utc_now()
         previous_quality = device.network_quality
-        quality = self.quality.add(
+        old_runtime_state = device.runtime_state
+        old_detection_state = device.detection_state
+        quality_result = self.quality.add(
             device.device_name,
             session,
             batch,
             now,
         )
+        quality = quality_result.quality
         device.last_seen_at = now
         device.last_csi_at = now
+        device.runtime_state = "uploading"
+        device.detection_state = "running"
         device.network_quality = quality
         if device.state != "error":
             device.state = "online"
+            device.last_online_at = now
+        self._parse_error_count.pop((device.device_name, session), None)
 
         key = (device.device_name, session)
         window = self._csi_windows[key]
+        if quality_result.seq_reset:
+            window.clear()
+            logger.info(
+                "CSI_SEQ_RESET device=%s session=%s prev_seq=%s new_seq0=%s "
+                "gap=%s action=treat_as_hardware_restart",
+                device.device_name,
+                session,
+                quality_result.previous_seq1,
+                quality_result.new_seq0,
+                quality_result.gap_seconds,
+            )
         window.append(batch.to_algorithm_input())
         fall_event = None
         window_size = int(self.app.config["CSI_WINDOW_SIZE"])
+        window_frame_count = sum(
+            len(item.get("frames", [])) for item in window
+        )
         if (
-            len(window) >= window_size
+            window_frame_count >= window_size
             and quality != "unknown"
             and key not in self._fall_emitted
         ):
@@ -610,6 +677,24 @@ class DeviceCoordinator:
                 self._fall_emitted.add(key)
 
         db.session.commit()
+
+        if (
+            old_runtime_state != device.runtime_state
+            or old_detection_state != device.detection_state
+        ):
+            self._push_runtime_event(device)
+
+        if (
+            previous_quality in {"poor", "fair"}
+            and quality in {"fair", "good"}
+            and quality != previous_quality
+        ):
+            logger.info(
+                "CSI_RECOVERED device=%s session=%s network_quality=%s",
+                device.device_name,
+                session,
+                quality,
+            )
 
         if quality != previous_quality:
             websocket_hub.push_to_user(
@@ -692,12 +777,15 @@ class DeviceCoordinator:
         if not should_stop or stop_key is None or session is None:
             return
         self._fault_stop_requested.add(stop_key)
+        self._log_auto_stop(device, session, f"fault:{code}")
         try:
             self.mqtt.publish_control(
                 device.device_name,
                 "stop",
                 session,
                 generate_message_id("fault-stop"),
+                reason=f"fault:{code}",
+                source="auto",
             )
         except MqttUnavailable:
             self._fault_stop_requested.discard(stop_key)
@@ -705,6 +793,65 @@ class DeviceCoordinator:
                 "Failed to publish automatic stop for faulted device %s",
                 device.device_name,
             )
+
+    def _record_csi_parse_error(
+        self,
+        device: Device,
+        session: str,
+        message: str,
+    ) -> None:
+        key = (device.device_name, session or device.current_session or "")
+        count = self._parse_error_count.get(key, 0) + 1
+        self._parse_error_count[key] = count
+        logger.warning(
+            "CSI_PARSE_ERROR device=%s session=%s count=%s action=ignore_once "
+            "error=%s",
+            device.device_name,
+            key[1],
+            count,
+            message,
+        )
+        if count < int(self.app.config["CSI_PARSE_ERROR_LIMIT"]):
+            return
+
+        if device.network_quality == "poor":
+            return
+        device.network_quality = "poor"
+        db.session.commit()
+        websocket_hub.push_to_user(
+            device.owner_user_id,
+            "detection.network-quality",
+            device.device_name,
+            {
+                "session": device.current_session,
+                "network_quality": "poor",
+                "last_csi_at": isoformat(device.last_csi_at),
+            },
+        )
+
+    def _log_auto_stop(
+        self,
+        device: Device,
+        session: str,
+        reason: str,
+    ) -> None:
+        logger.warning(
+            "AUTO_STOP device=%s session=%s reason=%s "
+            "last_seen_at=%s last_status_at=%s last_csi_at=%s "
+            "network_quality=%s fault_code=%s fault_message=%s "
+            "detection_state=%s runtime_state=%s",
+            device.device_name,
+            session,
+            reason,
+            isoformat(device.last_seen_at),
+            isoformat(device.last_status_at),
+            isoformat(device.last_csi_at),
+            device.network_quality,
+            device.fault_code,
+            device.fault_message,
+            device.detection_state,
+            device.runtime_state,
+        )
 
     def _push_runtime_event(
         self,
@@ -728,7 +875,13 @@ class DeviceCoordinator:
     def scan_offline_devices(self) -> int:
         now = utc_now()
         offline_timeout = self.app.config["OFFLINE_TIMEOUT_SECONDS"]
-        csi_timeout = self.app.config["CSI_TIMEOUT_SECONDS"]
+        expected_interval = float(
+            self.app.config["CSI_EXPECTED_INTERVAL_SECONDS"]
+        )
+        normal_timeout = max(3.0, expected_interval * 2)
+        soft_timeout = float(self.app.config["CSI_SOFT_TIMEOUT_SECONDS"])
+        recovery_grace = float(self.app.config["CSI_RECOVERY_GRACE_SECONDS"])
+        hard_timeout = float(self.app.config["CSI_HARD_TIMEOUT_SECONDS"])
         changed: list[Device] = []
         quality_changed: list[Device] = []
 
@@ -737,6 +890,85 @@ class DeviceCoordinator:
                 db.select(Device).where(Device.state != "offline")
             ).all()
             for device in devices:
+                if self._is_running_like(device, now):
+                    last_signal = self._last_running_signal_at(device)
+                    if last_signal is None:
+                        continue
+                    gap = (now - last_signal).total_seconds()
+                if device.detection_state == "starting":
+                    start_grace = float(self.app.config["START_GRACE_SECONDS"])
+
+                    if gap <= start_grace:
+                        self._log_csi_timeout(
+                            device,
+                            gap,
+                            "START_GRACE",
+                            "keep_starting",
+                        )
+                        continue
+
+                    if gap <= hard_timeout:
+                        if device.network_quality != "poor":
+                            device.network_quality = "poor"
+                            quality_changed.append(device)
+                        self._log_csi_timeout(
+                            device,
+                            gap,
+                            "START_GRACE_EXCEEDED",
+                            "degrade_quality_keep_starting",
+                        )
+                        continue
+
+                    if gap > hard_timeout:
+                        old_session = device.current_session
+                        logger.warning(
+                            "CSI_HARD_TIMEOUT device=%s session=%s gap=%.1f "
+                            "action=mark_offline",
+                            device.device_name,
+                            old_session,
+                            gap,
+                        )
+                        device.state = "offline"
+                        device.runtime_state = "idle"
+                        device.detection_state = "idle"
+                        device.current_session = None
+                        device.network_quality = "unknown"
+                        self._clear_session(device.device_name, old_session)
+                        if old_session:
+                            self._fault_stop_requested.discard(
+                                (device.device_name, old_session)
+                            )
+                        changed.append(device)
+                        continue
+
+                    target_quality = None
+                    if gap > recovery_grace:
+                        target_quality = "poor"
+                        self._log_csi_timeout(
+                            device,
+                            gap,
+                            "CSI_RECOVERY_GRACE",
+                            "keep_running_wait_hardware_recovery",
+                        )
+                    elif gap > soft_timeout:
+                        target_quality = "poor"
+                        self._log_csi_timeout(
+                            device,
+                            gap,
+                            "CSI_SOFT_TIMEOUT",
+                            "degrade_quality_only",
+                        )
+                    elif gap > normal_timeout:
+                        target_quality = "fair"
+
+                    if (
+                        target_quality is not None
+                        and device.network_quality != target_quality
+                    ):
+                        device.network_quality = target_quality
+                        quality_changed.append(device)
+                    continue
+
                 last_seen_at = _aware(device.last_seen_at)
                 if (
                     last_seen_at is not None
@@ -754,17 +986,6 @@ class DeviceCoordinator:
                             (device.device_name, old_session)
                         )
                     changed.append(device)
-                    continue
-
-                last_csi_at = _aware(device.last_csi_at)
-                if (
-                    device.detection_state == "running"
-                    and last_csi_at is not None
-                    and (now - last_csi_at).total_seconds() > csi_timeout
-                    and device.network_quality != "poor"
-                ):
-                    device.network_quality = "poor"
-                    quality_changed.append(device)
 
             if changed or quality_changed:
                 db.session.commit()
@@ -788,6 +1009,59 @@ class DeviceCoordinator:
                 },
             )
         return len(changed)
+
+    def _is_running_like(self, device: Device, now: datetime) -> bool:
+        if device.detection_state in {"starting", "running"}:
+            return True
+        if device.runtime_state == "uploading":
+            return True
+        last_csi_at = _aware(device.last_csi_at)
+        return bool(
+            device.current_session
+            and last_csi_at is not None
+            and (
+                now - last_csi_at
+            ).total_seconds() <= float(
+                self.app.config["CSI_HARD_TIMEOUT_SECONDS"]
+            )
+        )
+
+    def _last_running_signal_at(self, device: Device) -> datetime | None:
+        last_csi_at = _aware(device.last_csi_at)
+        if last_csi_at is not None:
+            return last_csi_at
+
+        candidates = [
+            _aware(device.last_seen_at),
+            _aware(device.last_status_at),
+            _aware(device.updated_at),
+        ]
+        return max(
+            (value for value in candidates if value is not None),
+            default=None,
+        )
+
+    def _log_csi_timeout(
+        self,
+        device: Device,
+        gap: float,
+        event_name: str,
+        action: str,
+    ) -> None:
+        session = device.current_session or ""
+        key = (device.device_name, session, event_name)
+        now = time.monotonic()
+        if now - self._last_timeout_log.get(key, 0) < 10:
+            return
+        self._last_timeout_log[key] = now
+        logger.info(
+            "%s device=%s session=%s gap=%.1f action=%s",
+            event_name,
+            device.device_name,
+            session,
+            gap,
+            action,
+        )
 
     def start_monitor(self) -> None:
         if (
@@ -825,7 +1099,22 @@ class DeviceCoordinator:
             ]:
                 self._csi_windows.pop(key, None)
                 self._fall_emitted.discard(key)
+            for key in [
+                key for key in self._parse_error_count if key[0] == device_name
+            ]:
+                self._parse_error_count.pop(key, None)
+            for key in [
+                key for key in self._last_timeout_log if key[0] == device_name
+            ]:
+                self._last_timeout_log.pop(key, None)
             return
         key = (device_name, session)
         self._csi_windows.pop(key, None)
         self._fall_emitted.discard(key)
+        self._parse_error_count.pop(key, None)
+        for timeout_key in [
+            timeout_key
+            for timeout_key in self._last_timeout_log
+            if timeout_key[0] == device_name and timeout_key[1] == session
+        ]:
+            self._last_timeout_log.pop(timeout_key, None)

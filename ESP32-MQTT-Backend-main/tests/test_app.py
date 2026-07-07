@@ -1,17 +1,37 @@
 import base64
+from datetime import timedelta
 
-from sqlalchemy import inspect
+from sqlalchemy import func, inspect
 
 from app.extensions import db
-from app.models import Admin, Device, FallEvent, User, utc_now
+from app.models import (
+    Admin,
+    Device,
+    FallEvent,
+    User,
+    WxNotifyLog,
+    WxSubscription,
+    utc_now,
+)
 from app.services.csi_payload_service import BATCH_HEADER, FRAME_HEADER
 
 
-def csi_payload(session, batch_no, seq0):
-    sequences = (seq0, seq0 + 1)
+def csi_payload(
+    session,
+    batch_no,
+    seq0,
+    *,
+    frame_count=2,
+    batch_interval_us=1_000_000,
+):
+    sequences = tuple(seq0 + index for index in range(frame_count))
+    batch_start = 1_000_000 + (batch_no - 1) * batch_interval_us
     timestamps = (
-        1_000_000 + (batch_no - 1) * 1_000_000,
-        1_033_333 + (batch_no - 1) * 1_000_000,
+        batch_start,
+        *(
+            batch_start + index * 33_333
+            for index in range(1, frame_count)
+        ),
     )
     parts = [
         BATCH_HEADER.pack(
@@ -107,7 +127,14 @@ def test_database_has_expected_tables_and_foreign_keys(app):
             db.text("PRAGMA foreign_keys")
         ).scalar()
 
-    assert table_names == {"admin", "users", "devices", "fall_events"}
+    assert table_names == {
+        "admin",
+        "users",
+        "devices",
+        "fall_events",
+        "wx_subscriptions",
+        "wx_notify_logs",
+    }
     assert foreign_keys_enabled == 1
 
 
@@ -463,6 +490,44 @@ def test_wechat_login_token_and_profile(client, app):
         assert user.phone == "13800000000"
 
 
+def test_miniapp_records_wechat_subscription(client, app):
+    app.config["WECHAT_FALL_ALERT_TEMPLATE_ID"] = "tpl-fall-alert"
+    login_data = login_miniapp(client, app)
+    token = login_data["access_token"]
+
+    accepted = client.post(
+        "/api/v1/wechat/subscriptions",
+        json={
+            "scene": "fall_alert",
+            "template_id": "tpl-fall-alert",
+            "status": "accept",
+        },
+        headers=bearer(token),
+    )
+    assert accepted.status_code == 200
+    assert accepted.get_json()["remaining_count"] == 1
+
+    rejected = client.post(
+        "/api/v1/wechat/subscriptions",
+        json={
+            "scene": "fall_alert",
+            "template_id": "tpl-fall-alert",
+            "status": "reject",
+        },
+        headers=bearer(token),
+    )
+    assert rejected.status_code == 200
+    assert rejected.get_json()["status"] == "reject"
+    assert rejected.get_json()["remaining_count"] == 0
+
+    status = client.get(
+        "/api/v1/wechat/subscriptions",
+        headers=bearer(token),
+    )
+    assert status.status_code == 200
+    assert status.get_json()["remaining_count"] == 0
+
+
 def test_miniapp_silent_login_does_not_create_new_user(client, app):
     app.config["WECHAT_CODE_EXCHANGE"] = lambda code: {
         "openid": "wx-silent-new",
@@ -490,6 +555,138 @@ def test_miniapp_silent_login_does_not_create_new_user(client, app):
     )
     assert restored.status_code == 200
     assert restored.get_json()["user"]["is_new_user"] is False
+
+
+def test_admin_can_simulate_fall_and_send_wechat_notify(client, app):
+    app.config["WECHAT_NOTIFY_ENABLED"] = True
+    app.config["WECHAT_FALL_ALERT_TEMPLATE_ID"] = "tpl-fall-alert"
+    sent_messages = []
+    app.config["WECHAT_SUBSCRIBE_SENDER"] = (
+        lambda **message: sent_messages.append(message)
+        or {"errcode": 0, "errmsg": "ok"}
+    )
+    csrf_token = login_admin(client, app)
+
+    with app.app_context():
+        user = User(wx_openid="wx-simulated-fall", nickname="Sim User")
+        device = Device(
+            device_name="sim-fall-device",
+            display_name="Sim Fall Device",
+            owner=user,
+            location="Bedroom",
+            state="online",
+            runtime_state="uploading",
+            detection_state="running",
+            current_session="real-session-kept",
+            network_quality="good",
+        )
+        db.session.add_all([user, device])
+        db.session.flush()
+        subscription = WxSubscription(
+            user_id=user.id,
+            scene="fall_alert",
+            template_id="tpl-fall-alert",
+            status="accept",
+            remaining_count=0,
+            last_subscribed_at=utc_now(),
+        )
+        db.session.add(subscription)
+        db.session.commit()
+        device_id = device.id
+
+    response = client.post(
+        f"/api/devices/{device_id}/simulate-fall",
+        json={"send_wechat": True},
+        headers=csrf_headers(csrf_token),
+    )
+
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["ok"] is True
+    assert body["fall_event"]["device_name"] == "sim-fall-device"
+    assert body["wechat"]["sent"] is True
+    assert body["wechat"]["remaining_count"] == 1
+    assert sent_messages[0]["openid"] == "wx-simulated-fall"
+    assert sent_messages[0]["page"].startswith("pages/fall-alert/index?id=")
+    assert set(sent_messages[0]["data"]) == {
+        "thing1",
+        "time2",
+        "thing3",
+        "thing5",
+    }
+
+    with app.app_context():
+        event = db.session.scalar(db.select(FallEvent))
+        assert event is not None
+        assert event.status == "pending"
+        assert event.session.startswith("admin-simulated-")
+        assert event.wechat_notified is True
+        device = db.session.get(Device, device_id)
+        assert device.detection_state == "running"
+        assert device.runtime_state == "uploading"
+        assert device.current_session == "real-session-kept"
+        subscription = db.session.scalar(db.select(WxSubscription))
+        assert subscription.remaining_count == 1
+        log = db.session.scalar(db.select(WxNotifyLog))
+        assert log.success is True
+        assert log.openid_masked == "wx-simul***"
+
+    second_response = client.post(
+        f"/api/devices/{device_id}/simulate-fall",
+        json={"send_wechat": True},
+        headers=csrf_headers(csrf_token),
+    )
+
+    assert second_response.status_code == 201
+    assert second_response.get_json()["wechat"]["sent"] is True
+    assert second_response.get_json()["wechat"]["remaining_count"] == 1
+    assert len(sent_messages) == 2
+
+    with app.app_context():
+        assert db.session.scalar(db.select(WxSubscription)).remaining_count == 1
+        assert db.session.scalar(db.select(func.count(FallEvent.id))) == 2
+        assert db.session.scalar(db.select(func.count(WxNotifyLog.id))) == 2
+
+
+def test_admin_simulated_fall_survives_missing_wechat_subscription(client, app):
+    app.config["WECHAT_NOTIFY_ENABLED"] = True
+    app.config["WECHAT_FALL_ALERT_TEMPLATE_ID"] = "tpl-fall-alert"
+    sent_messages = []
+    app.config["WECHAT_SUBSCRIBE_SENDER"] = (
+        lambda **message: sent_messages.append(message)
+        or {"errcode": 0, "errmsg": "ok"}
+    )
+    csrf_token = login_admin(client, app)
+
+    with app.app_context():
+        user = User(wx_openid="wx-no-subscription", nickname="No Sub")
+        device = Device(
+            device_name="no-sub-device",
+            display_name="No Sub Device",
+            owner=user,
+            network_quality="unknown",
+        )
+        db.session.add_all([user, device])
+        db.session.commit()
+        device_id = device.id
+
+    response = client.post(
+        f"/api/devices/{device_id}/simulate-fall",
+        json={"send_wechat": True},
+        headers=csrf_headers(csrf_token),
+    )
+
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["ok"] is True
+    assert body["wechat"]["sent"] is False
+    assert body["wechat"]["reason"] == "subscription_not_found"
+    assert sent_messages == []
+    with app.app_context():
+        assert db.session.scalar(db.select(FallEvent)) is not None
+        log = db.session.scalar(db.select(WxNotifyLog))
+        assert log.success is False
+        assert log.errcode == 43101
 
 
 def test_miniapp_device_ownership_and_control(client, app):
@@ -644,6 +841,190 @@ def test_miniapp_device_ownership_and_control(client, app):
         )
         assert device.detection_state == "idle"
         assert device.current_session is None
+
+
+def test_start_can_be_confirmed_by_first_csi_without_fresh_status(client, app):
+    login_data = login_miniapp(client, app, openid="wx-c-board-start")
+    token = login_data["access_token"]
+    user_id = login_data["user"]["id"]
+    published = []
+    app.config["MQTT_CONTROL_PUBLISHER"] = (
+        lambda **message: published.append(message)
+    )
+
+    with app.app_context():
+        device = Device(
+            device_name="c-board-start",
+            owner_user_id=user_id,
+            state="online",
+            last_seen_at=utc_now() - timedelta(minutes=2),
+            last_status_at=utc_now() - timedelta(minutes=2),
+        )
+        db.session.add(device)
+        db.session.commit()
+
+    response = client.post(
+        "/api/v1/devices/c-board-start/control",
+        json={"action": "start"},
+        headers={**bearer(token), "Idempotency-Key": "c-board-start"},
+    )
+    assert response.status_code == 202
+    session = response.get_json()["session"]
+    assert published[0]["reason"] == "user_start"
+
+    with app.app_context():
+        coordinator = app.extensions["device_coordinator"]
+        coordinator.handle_mqtt_payload(
+            "c-board-start",
+            "csi",
+            csi_payload(
+                session,
+                1,
+                1,
+                frame_count=45,
+                batch_interval_us=1_500_000,
+            ),
+        )
+        device = db.session.scalar(
+            db.select(Device).where(Device.device_name == "c-board-start")
+        )
+        assert device.state == "online"
+        assert device.runtime_state == "uploading"
+        assert device.detection_state == "running"
+        assert device.current_session == session
+        assert device.last_csi_at is not None
+
+
+def test_running_csi_gap_degrades_quality_before_hard_offline(app):
+    with app.app_context():
+        user = User(wx_openid="wx-csi-gap")
+        device = Device(
+            device_name="csi-gap-device",
+            owner=user,
+            state="online",
+            runtime_state="uploading",
+            detection_state="running",
+            current_session="sess-gap",
+            network_quality="good",
+            last_seen_at=utc_now() - timedelta(seconds=12),
+            last_status_at=utc_now() - timedelta(minutes=5),
+            last_csi_at=utc_now() - timedelta(seconds=12),
+        )
+        db.session.add_all([user, device])
+        db.session.commit()
+
+        count = app.extensions["device_coordinator"].scan_offline_devices()
+        db.session.refresh(device)
+        assert count == 0
+        assert device.state == "online"
+        assert device.runtime_state == "uploading"
+        assert device.detection_state == "running"
+        assert device.current_session == "sess-gap"
+        assert device.network_quality == "poor"
+
+        device.last_seen_at = utc_now() - timedelta(seconds=35)
+        device.last_csi_at = utc_now() - timedelta(seconds=35)
+        db.session.commit()
+        count = app.extensions["device_coordinator"].scan_offline_devices()
+        db.session.refresh(device)
+        assert count == 1
+        assert device.state == "offline"
+        assert device.detection_state == "idle"
+        assert device.current_session is None
+
+
+def test_csi_seq_reset_keeps_session_and_clears_algorithm_window(app):
+    app.config["CSI_WINDOW_SIZE"] = 90
+    with app.app_context():
+        user = User(wx_openid="wx-seq-reset")
+        device = Device(
+            device_name="seq-reset-device",
+            owner=user,
+            state="online",
+            runtime_state="uploading",
+            detection_state="running",
+            current_session="sess-reset",
+            network_quality="good",
+        )
+        db.session.add_all([user, device])
+        db.session.commit()
+
+        coordinator = app.extensions["device_coordinator"]
+        coordinator.handle_mqtt_payload(
+            device.device_name,
+            "csi",
+            csi_payload(
+                "sess-reset",
+                1,
+                100,
+                frame_count=45,
+                batch_interval_us=1_500_000,
+            ),
+        )
+        coordinator.handle_mqtt_payload(
+            device.device_name,
+            "csi",
+            csi_payload(
+                "sess-reset",
+                2,
+                145,
+                frame_count=45,
+                batch_interval_us=1_500_000,
+            ),
+        )
+        coordinator.handle_mqtt_payload(
+            device.device_name,
+            "csi",
+            csi_payload(
+                "sess-reset",
+                3,
+                1,
+                frame_count=45,
+                batch_interval_us=10_000_000,
+            ),
+        )
+
+        db.session.refresh(device)
+        assert device.state == "online"
+        assert device.runtime_state == "uploading"
+        assert device.detection_state == "running"
+        assert device.current_session == "sess-reset"
+        assert device.network_quality == "fair"
+        assert len(coordinator._csi_windows[(device.device_name, "sess-reset")]) == 1
+
+
+def test_single_csi_parse_error_does_not_stop_running_device(app):
+    with app.app_context():
+        user = User(wx_openid="wx-parse-error")
+        device = Device(
+            device_name="parse-error-device",
+            owner=user,
+            state="online",
+            runtime_state="uploading",
+            detection_state="running",
+            current_session="sess-parse",
+            network_quality="good",
+        )
+        db.session.add_all([user, device])
+        db.session.commit()
+
+        app.extensions["device_coordinator"].handle_mqtt_payload(
+            device.device_name,
+            "csi",
+            {
+                "session": "sess-parse",
+                "fmt": "bad-format",
+                "batch": 1,
+                "frames": 45,
+            },
+        )
+
+        db.session.refresh(device)
+        assert device.state == "online"
+        assert device.runtime_state == "uploading"
+        assert device.detection_state == "running"
+        assert device.current_session == "sess-parse"
+        assert device.network_quality == "good"
 
 
 def test_hardware_status_fault_auto_stop_and_offline_contract(app):
@@ -821,7 +1202,11 @@ def test_mqtt_state_csi_fall_event_and_offline_scan(client, app):
             )
         )
         device.last_seen_at = utc_now().replace(year=2020)
+        device.last_csi_at = None
         device.state = "online"
+        device.runtime_state = "idle"
+        device.detection_state = "idle"
+        device.current_session = None
         db.session.commit()
         count = app.extensions[
             "device_coordinator"

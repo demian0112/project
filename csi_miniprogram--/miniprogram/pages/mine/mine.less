@@ -134,11 +134,31 @@ page {
   background: #eef3ff;
 }
 
+.feature-icon-alert {
+  color: #d94f48;
+  background: #fff0ef;
+}
+
 .device-icon-sm {
   width: 34rpx;
   height: 28rpx;
   border: 4rpx solid currentColor;
   border-radius: 8rpx;
+}
+
+.alert-icon-sm {
+  font-size: 32rpx;
+  font-weight: 820;
+}
+
+.mini-spinner {
+  width: 30rpx;
+  height: 30rpx;
+  flex: 0 0 auto;
+  border: 4rpx solid #e5ebe8;
+  border-top-color: #168765;
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
 }
 
 
@@ -201,3 +221,9 @@ page {
 .phone-title { display:block; font-size:24rpx; font-weight:760; }
 .phone-desc { display:block; margin-top:8rpx; color:#89958f; font-size:18rpx; line-height:1.5; }
 .phone-action { flex:0 0 auto; min-width:180rpx; margin:0; color:#fff; font-size:20rpx; border-radius:22rpx; background:#168765; }
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

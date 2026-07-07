@@ -41,6 +41,24 @@ export interface DeviceProfileUpdate {
   location?: string | null
 }
 
+export type WechatSubscriptionStatusValue = 'accept' | 'reject' | 'ban' | 'filter'
+
+export interface WechatSubscriptionPayload {
+  scene: 'fall_alert'
+  template_id: string
+  status: WechatSubscriptionStatusValue
+}
+
+export interface WechatSubscriptionStatus {
+  ok: boolean
+  enabled: boolean
+  scene: 'fall_alert'
+  template_id: string
+  status: WechatSubscriptionStatusValue | ''
+  remaining_count: number
+  last_subscribed_at?: string | null
+}
+
 export interface ApiError extends Error {
   code: string
   statusCode: number
@@ -119,6 +137,19 @@ export function updateCurrentUserPhone(code: string): Promise<UserProfile> {
     method: 'POST',
     data: { code },
   })
+}
+
+export function registerWechatSubscription(
+  payload: WechatSubscriptionPayload,
+): Promise<WechatSubscriptionStatus> {
+  return request<WechatSubscriptionStatus>('/api/v1/wechat/subscriptions', {
+    method: 'POST',
+    data: payload,
+  })
+}
+
+export function getWechatSubscriptionStatus(): Promise<WechatSubscriptionStatus> {
+  return request<WechatSubscriptionStatus>('/api/v1/wechat/subscriptions')
 }
 
 export async function getDevices(): Promise<DeviceSummary[]> {

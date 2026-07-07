@@ -63,7 +63,18 @@ class MqttManager:
         action: str,
         session: str,
         command_id: str,
+        *,
+        reason: str = "manual_control",
+        source: str = "user",
     ):
+        logger.info(
+            "CONTROL_PUBLISH device=%s action=%s session=%s reason=%s source=%s",
+            device_name,
+            action,
+            session,
+            reason,
+            source,
+        )
         override = self.app.config.get("MQTT_CONTROL_PUBLISHER")
         if override is not None:
             return override(
@@ -71,6 +82,8 @@ class MqttManager:
                 action=action,
                 session=session,
                 command_id=command_id,
+                reason=reason,
+                source=source,
             )
 
         client = self.ensure_device(device_name)

@@ -410,6 +410,9 @@ function deviceRow(device) {
           <button class="icon-button" type="button" data-edit-device="${escapeHtml(device.id)}">
             编辑
           </button>
+          <button class="icon-button warning" type="button" data-simulate-fall="${escapeHtml(device.id)}">
+            模拟跌倒
+          </button>
           <button class="icon-button danger" type="button" data-delete-device="${escapeHtml(device.id)}">
             删除
           </button>
@@ -447,6 +450,13 @@ function renderDevices() {
     .forEach((button) => {
       button.addEventListener("click", () => {
         deleteDevice(Number(button.dataset.deleteDevice));
+      });
+    });
+  elements.deviceTableBody
+    .querySelectorAll("[data-simulate-fall]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        simulateFall(Number(button.dataset.simulateFall));
       });
     });
 }
@@ -798,6 +808,44 @@ async function deleteDevice(deviceId) {
     showToast("设备已删除");
   } catch (error) {
     showToast("删除失败", error.message, "error");
+  }
+}
+
+async function simulateFall(deviceId) {
+  const device = state.devices.find((item) => item.id === deviceId);
+  if (!device) {
+    return;
+  }
+  const deviceName = device.name || device.device_uid;
+  const confirmed = window.confirm(
+    `确定要为设备“${deviceName}”模拟一次跌倒告警吗？这会创建一条跌倒事件，并尝试向绑定用户发送微信服务通知。`,
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    const result = await apiRequest(`/api/devices/${deviceId}/simulate-fall`, {
+      method: "POST",
+      body: JSON.stringify({
+        remark: "管理员模拟跌倒触发",
+        send_wechat: true,
+      }),
+    });
+    await loadDashboard({ silent: true });
+    const wechat = result.wechat || {};
+    if (wechat.sent) {
+      showToast("模拟跌倒事件已创建", "微信通知发送成功");
+      return;
+    }
+    const reason = wechat.errmsg || wechat.reason || "微信通知未发送";
+    showToast(
+      "模拟跌倒事件已创建",
+      `但微信通知未发送：${reason}`,
+      "error",
+    );
+  } catch (error) {
+    showToast("模拟跌倒失败", error.message, "error");
   }
 }
 

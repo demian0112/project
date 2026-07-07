@@ -5,12 +5,12 @@ from flask import Flask, current_app
 
 from .extensions import db
 from .models import Admin
+from .schema import ensure_database_schema
 
 
 def initialize_database(app: Flask) -> list[str]:
     """Create the current admin/users/devices/fall_events schema."""
-    db.create_all()
-    changes: list[str] = []
+    changes = ensure_database_schema()
 
     username = app.config.get("INITIAL_ADMIN_USERNAME")
     password = app.config.get("INITIAL_ADMIN_PASSWORD")

@@ -1,5 +1,13 @@
+import { runtimeConfig } from '../../config/env'
 import { DeviceSummary, UserProfile } from '../../models/domain'
-import { getCurrentUser, getDevices, updateCurrentUserPhone } from '../../utils/api'
+import type { WechatSubscriptionStatusValue } from '../../utils/api'
+import {
+  getCurrentUser,
+  getDevices,
+  getWechatSubscriptionStatus,
+  registerWechatSubscription,
+  updateCurrentUserPhone,
+} from '../../utils/api'
 
 Page({
   data: {
@@ -19,6 +27,8 @@ Page({
     lastLoginText: '',
     totalDevices: 0,
     showPhonePrompt: false,
+    subscriptionLoading: false,
+    fallAlertSubscriptionText: '用于接收跌倒服务通知',
   },
 
   onLoad() {
@@ -59,6 +69,7 @@ Page({
         totalDevices: devices.length,
         showPhonePrompt: !user.phone,
       })
+      this.loadSubscriptionStatus()
     } catch (error: any) {
       console.error('个人中心加载失败', error)
       const app = getApp<IAppOption>()
@@ -75,6 +86,20 @@ Page({
         totalDevices: 0,
         showPhonePrompt: false,
       })
+    }
+  },
+
+  async loadSubscriptionStatus() {
+    try {
+      const status = await getWechatSubscriptionStatus()
+      let text = '用于接收跌倒服务通知'
+      if (!status.template_id) text = '请先配置订阅消息模板'
+      else if (status.status === 'accept') text = '跌倒提醒已开启'
+      else if (status.status === 'reject') text = '上次未授权，可重新开启'
+      else if (status.status) text = `当前状态：${status.status}`
+      this.setData({ fallAlertSubscriptionText: text })
+    } catch (error) {
+      console.error('订阅状态同步失败', error)
     }
   },
 
@@ -129,6 +154,56 @@ Page({
 
   onTapDeviceManagement() {
     wx.navigateTo({ url: '/pages/device-management/index' })
+  },
+
+  onEnableFallAlert() {
+    const templateId = runtimeConfig.subscribeTemplateIds.fallAlert
+    if (!templateId) {
+      wx.showToast({ title: '请先配置订阅模板 ID', icon: 'none' })
+      return
+    }
+    if (typeof wx.requestSubscribeMessage !== 'function') {
+      wx.showToast({ title: '当前环境不支持订阅消息', icon: 'none' })
+      return
+    }
+    if (this.data.subscriptionLoading) return
+    this.setData({ subscriptionLoading: true })
+    wx.requestSubscribeMessage({
+      tmplIds: [templateId],
+      success: async (result) => {
+        const status = String(
+          (result as Record<string, unknown>)[templateId] || 'reject',
+        ) as WechatSubscriptionStatusValue
+        try {
+          await registerWechatSubscription({
+            scene: 'fall_alert',
+            template_id: templateId,
+            status,
+          })
+          const accepted = status === 'accept'
+          this.setData({
+            fallAlertSubscriptionText: accepted
+              ? '跌倒提醒已开启'
+              : '未授权，可随时重新开启',
+          })
+          wx.showToast({
+            title: accepted ? '跌倒提醒已开启' : '未开启跌倒提醒',
+            icon: accepted ? 'success' : 'none',
+          })
+        } catch (error: any) {
+          wx.showToast({
+            title: (error && error.message) || '订阅状态保存失败',
+            icon: 'none',
+          })
+        } finally {
+          this.setData({ subscriptionLoading: false })
+        }
+      },
+      fail: () => {
+        wx.showToast({ title: '订阅授权调用失败', icon: 'none' })
+        this.setData({ subscriptionLoading: false })
+      },
+    })
   },
 
   formatDate(value: string | null): string {
