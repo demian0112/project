@@ -38,7 +38,11 @@
     </view>
     <view wx:if="{{activeAlert}}" class="alert-actions"><button class="safe-action" bindtap="onConfirmSafe">我已确认安全</button><button class="detail-action" bindtap="onAlertTap">查看告警</button></view>
 
-    <view wx:if="{{device.state === 'error'}}" class="fault-banner"><text class="fault-title">设备发生异常</text><text class="fault-desc">{{device.fault.message || device.fault_message || '请检查设备连接和供电状态'}}</text></view>
+    <view wx:if="{{device.state === 'error' || device.fault.code}}" class="fault-banner">
+      <text class="fault-title">设备采集异常</text>
+      <text class="fault-desc">{{device.fault.message || device.fault_message || '未接收到 CSI 数据，请检查 A 板供电、A/B 板连接和设备摆放'}}</text>
+      <button class="fault-reset-button" loading="{{resetLoading}}" disabled="{{resetLoading || !device.enabled}}" bindtap="onResetFaultTap">我已检查，恢复设备</button>
+    </view>
 
     <view class="section-title">通信与运行</view>
     <view class="status-card">
@@ -50,7 +54,7 @@
     </view>
 
     <view class="notice"><view class="notice-icon">i</view><text>控制请求成功仅代表命令已发送，最终运行状态由设备回执更新。</text></view>
-    <button class="control-button {{device.detection_state === 'running' ? 'stop-button' : ''}}" loading="{{controlLoading}}" disabled="{{controlLoading || !device.enabled || device.state !== 'online' || device.fault.code || device.detection_state === 'starting' || device.detection_state === 'stopping'}}" bindtap="onControlTap">
+    <button class="control-button {{device.detection_state === 'running' ? 'stop-button' : ''}}" loading="{{controlLoading}}" disabled="{{controlLoading || resetLoading || !device.enabled || device.state !== 'online' || device.fault.code || device.detection_state === 'starting' || device.detection_state === 'stopping'}}" bindtap="onControlTap">
       {{!device.enabled ? '设备已停用' : device.state === 'offline' ? '设备离线，无法操作' : device.state === 'error' || device.fault.code ? '设备异常，请先检查' : device.detection_state === 'running' ? '停止检测' : device.detection_state === 'starting' ? '正在启动…' : device.detection_state === 'stopping' ? '正在停止…' : '开始检测'}}
     </button>
   </block>

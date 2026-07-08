@@ -21,18 +21,56 @@ from .services.wechat_service import (
     exchange_wechat_code,
 )
 from .services.wechat_notify_service import (
-    FALL_ALERT_SCENE,
     ALLOWED_SUBSCRIPTION_STATUSES,
+    DEVICE_FAULT_SCENE,
+    FALL_ALERT_SCENE,
     record_subscription,
 )
 
 
 miniapp_bp = Blueprint("miniapp_api", __name__, url_prefix="/api/v1")
 F = TypeVar("F", bound=Callable[..., Any])
+SUBSCRIPTION_TEMPLATE_CONFIG = {
+    FALL_ALERT_SCENE: "WECHAT_FALL_ALERT_TEMPLATE_ID",
+    DEVICE_FAULT_SCENE: "WECHAT_DEVICE_FAULT_TEMPLATE_ID",
+}
 
 
 def api_error(code: str, message: str, status_code: int):
     return jsonify({"error": code, "message": message}), status_code
+
+
+def _subscription_template_id(scene: str) -> str:
+    config_key = SUBSCRIPTION_TEMPLATE_CONFIG.get(scene)
+    if config_key is None:
+        return ""
+    return str(current_app.config.get(config_key) or "").strip()
+
+
+def _subscription_snapshot(scene: str) -> dict[str, Any]:
+    template_id = _subscription_template_id(scene)
+    subscription = None
+    if template_id:
+        subscription = db.session.scalar(
+            db.select(WxSubscription).where(
+                WxSubscription.user_id == g.current_miniapp_user.id,
+                WxSubscription.scene == scene,
+                WxSubscription.template_id == template_id,
+            )
+        )
+
+    remaining_count = 1 if subscription and subscription.status == "accept" else 0
+    return {
+        "scene": scene,
+        "template_id": template_id,
+        "status": subscription.status if subscription else "",
+        "remaining_count": remaining_count,
+        "last_subscribed_at": (
+            subscription.last_subscribed_at.isoformat()
+            if subscription and subscription.last_subscribed_at
+            else None
+        ),
+    }
 
 
 def token_required(view: F) -> F:
@@ -233,33 +271,14 @@ def update_profile():
 @miniapp_bp.get("/wechat/subscriptions")
 @token_required
 def get_wechat_subscriptions():
-    template_id = str(
-        current_app.config.get("WECHAT_FALL_ALERT_TEMPLATE_ID") or ""
-    ).strip()
-    subscription = None
-    if template_id:
-        subscription = db.session.scalar(
-            db.select(WxSubscription).where(
-                WxSubscription.user_id == g.current_miniapp_user.id,
-                WxSubscription.scene == FALL_ALERT_SCENE,
-                WxSubscription.template_id == template_id,
-            )
-        )
-
-    remaining_count = 1 if subscription and subscription.status == "accept" else 0
+    fall_snapshot = _subscription_snapshot(FALL_ALERT_SCENE)
+    device_fault_snapshot = _subscription_snapshot(DEVICE_FAULT_SCENE)
     return jsonify(
         {
             "ok": True,
             "enabled": bool(current_app.config["WECHAT_NOTIFY_ENABLED"]),
-            "scene": FALL_ALERT_SCENE,
-            "template_id": template_id,
-            "status": subscription.status if subscription else "",
-            "remaining_count": remaining_count,
-            "last_subscribed_at": (
-                subscription.last_subscribed_at.isoformat()
-                if subscription and subscription.last_subscribed_at
-                else None
-            ),
+            **fall_snapshot,
+            "items": [fall_snapshot, device_fault_snapshot],
         }
     )
 
@@ -271,20 +290,19 @@ def register_wechat_subscription():
     scene = str(data.get("scene") or FALL_ALERT_SCENE).strip()
     template_id = str(data.get("template_id") or "").strip()
     status = str(data.get("status") or "").strip().lower()
-    expected_template_id = str(
-        current_app.config.get("WECHAT_FALL_ALERT_TEMPLATE_ID") or ""
-    ).strip()
+    expected_template_id = _subscription_template_id(scene)
 
-    if scene != FALL_ALERT_SCENE:
+    if scene not in SUBSCRIPTION_TEMPLATE_CONFIG:
         return api_error(
             "INVALID_SUBSCRIPTION_SCENE",
-            "scene must be fall_alert",
+            "scene must be fall_alert or device_fault",
             400,
         )
     if not expected_template_id:
+        config_key = SUBSCRIPTION_TEMPLATE_CONFIG[scene]
         return api_error(
             "WECHAT_TEMPLATE_NOT_CONFIGURED",
-            "WECHAT_FALL_ALERT_TEMPLATE_ID is not configured",
+            f"{config_key} is not configured",
             503,
         )
     if template_id != expected_template_id:
@@ -416,6 +434,36 @@ def control_device(device_name: str):
             g.current_miniapp_user,
             device,
             action,
+            idempotency_key,
+        )
+    except ControlError as exc:
+        return api_error(exc.code, exc.message, exc.status_code)
+    return jsonify(response), 202
+
+
+@miniapp_bp.post("/devices/<string:device_name>/reset-fault")
+@token_required
+def reset_device_fault(device_name: str):
+    device, error = _owned_device(device_name)
+    if error is not None:
+        return error
+
+    idempotency_key = (
+        request.headers.get("Idempotency-Key", "").strip() or None
+    )
+    if idempotency_key is not None and len(idempotency_key) > 128:
+        return api_error(
+            "INVALID_IDEMPOTENCY_KEY",
+            "Idempotency-Key 不能超过 128 个字符",
+            400,
+        )
+
+    try:
+        response = current_app.extensions[
+            "device_coordinator"
+        ].reset_device_fault(
+            g.current_miniapp_user,
+            device,
             idempotency_key,
         )
     except ControlError as exc:

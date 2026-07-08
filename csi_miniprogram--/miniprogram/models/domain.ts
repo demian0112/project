@@ -22,6 +22,7 @@ export interface DeviceSummary {
   network_quality: NetworkQuality
   last_seen_at: string | null
   fault_message: string | null
+  fault_template_data?: Record<string, { value: string }> | null
 }
 
 export interface DeviceDetail extends DeviceSummary {
@@ -40,13 +41,14 @@ export interface DeviceDetail extends DeviceSummary {
   fault: {
     code: string | null
     message: string | null
+    template_data?: Record<string, { value: string }> | null
   }
 }
 
 export interface DeviceControlResult {
   accepted: boolean
   device_name: string
-  action: 'start' | 'stop'
+  action: 'start' | 'stop' | 'reset'
   control_state: string
   session: string | null
   message: string

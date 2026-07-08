@@ -29,6 +29,64 @@ def isoformat(value: datetime | None) -> str | None:
 DEVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
+def _truncate_template_value(value: str, limit: int = 20) -> str:
+    value = str(value or "").strip()
+    return value[:limit]
+
+
+def public_fault_message(code: str | None, raw_message: str | None = None) -> str | None:
+    if not code and not raw_message:
+        return None
+    fault_code = (code or "").strip().upper()
+    if fault_code == "UART_TIMEOUT":
+        return "CSI采集中断，请检查链路"
+    if fault_code in {"NO_CSI_FRAME", "NO_CSI_FRAME_TIMEOUT"}:
+        return "未收到CSI数据，请检查供电"
+    return "设备采集异常，请检查设备"
+
+
+def fault_template_data(
+    *,
+    device_name: str,
+    display_name: str | None,
+    location: str | None,
+    code: str | None,
+    raw_message: str | None = None,
+) -> dict[str, dict[str, str]] | None:
+    message = public_fault_message(code, raw_message)
+    if message is None:
+        return None
+    return {
+        "phrase1": {"value": "异常"},
+        "thing3": {
+            "value": _truncate_template_value(display_name or device_name)
+        },
+        "thing2": {"value": _truncate_template_value(location or "未设置位置")},
+        "thing5": {"value": _truncate_template_value(message)},
+    }
+
+
+def public_fault_payload(
+    *,
+    device_name: str,
+    display_name: str | None,
+    location: str | None,
+    code: str | None,
+    raw_message: str | None = None,
+) -> dict:
+    return {
+        "code": code,
+        "message": public_fault_message(code, raw_message),
+        "template_data": fault_template_data(
+            device_name=device_name,
+            display_name=display_name,
+            location=location,
+            code=code,
+            raw_message=raw_message,
+        ),
+    }
+
+
 class Admin(db.Model):
     __tablename__ = "admin"
 
@@ -284,6 +342,13 @@ class Device(db.Model):
 
     def to_dict(self) -> dict:
         """Administrator representation kept compatible with the current UI."""
+        fault = public_fault_payload(
+            device_name=self.device_name,
+            display_name=self.display_name,
+            location=self.location,
+            code=self.fault_code,
+            raw_message=self.fault_message,
+        )
         owner_username = (
             self.owner.admin_display_name
             if self.owner is not None
@@ -302,7 +367,8 @@ class Device(db.Model):
             "current_session": self.current_session,
             "network_quality": self.network_quality,
             "fault_code": self.fault_code,
-            "fault_message": self.fault_message,
+            "fault_message": fault["message"],
+            "fault_template_data": fault["template_data"],
             "owner_id": self.owner_user_id,
             "owner_username": owner_username,
             "owner_missing": self.owner is None,
@@ -317,6 +383,13 @@ class Device(db.Model):
         }
 
     def to_summary_dict(self) -> dict:
+        fault = public_fault_payload(
+            device_name=self.device_name,
+            display_name=self.display_name,
+            location=self.location,
+            code=self.fault_code,
+            raw_message=self.fault_message,
+        )
         return {
             "device_name": self.device_name,
             "display_name": self.display_name,
@@ -325,10 +398,18 @@ class Device(db.Model):
             "detection_state": self.detection_state,
             "network_quality": self.network_quality,
             "last_seen_at": isoformat(self.last_seen_at),
-            "fault_message": self.fault_message,
+            "fault_message": fault["message"],
+            "fault_template_data": fault["template_data"],
         }
 
     def to_detail_dict(self) -> dict:
+        fault = public_fault_payload(
+            device_name=self.device_name,
+            display_name=self.display_name,
+            location=self.location,
+            code=self.fault_code,
+            raw_message=self.fault_message,
+        )
         return {
             "device_name": self.device_name,
             "display_name": self.display_name,
@@ -348,8 +429,7 @@ class Device(db.Model):
                 "last_csi_at": isoformat(self.last_csi_at),
             },
             "fault": {
-                "code": self.fault_code,
-                "message": self.fault_message,
+                **fault,
             },
         }
 

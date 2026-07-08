@@ -52,6 +52,10 @@ def configure_app(app: Flask) -> None:
             "WECHAT_FALL_ALERT_TEMPLATE_ID",
             "",
         ),
+        WECHAT_DEVICE_FAULT_TEMPLATE_ID=os.getenv(
+            "WECHAT_DEVICE_FAULT_TEMPLATE_ID",
+            "",
+        ),
         WECHAT_MINIPROGRAM_STATE=os.getenv(
             "WECHAT_MINIPROGRAM_STATE",
             "trial",
@@ -60,6 +64,10 @@ def configure_app(app: Flask) -> None:
         WECHAT_FALL_ALERT_PAGE=os.getenv(
             "WECHAT_FALL_ALERT_PAGE",
             "pages/fall-alert/index",
+        ),
+        WECHAT_DEVICE_FAULT_PAGE=os.getenv(
+            "WECHAT_DEVICE_FAULT_PAGE",
+            "pages/device-detail/index",
         ),
         WECHAT_ACCESS_TOKEN_CACHE_SECONDS=int(
             os.getenv("WECHAT_ACCESS_TOKEN_CACHE_SECONDS", "6600")

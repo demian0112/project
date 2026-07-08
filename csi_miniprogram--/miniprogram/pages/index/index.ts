@@ -3,6 +3,8 @@ import { DeviceSummary, FallEvent, RealtimeEvent } from '../../models/domain'
 import { getDevices, getFallEvents, qualityText } from '../../utils/api'
 import { realtimeClient } from '../../services/realtime'
 
+const CSI_FAULT_CODES = ['NO_CSI_FRAME', 'NO_CSI_FRAME_TIMEOUT', 'UART_TIMEOUT']
+
 interface DisplayDevice extends DeviceSummary {
   stateText: string
   detectionText: string
@@ -36,12 +38,16 @@ Page({
   },
 
   onShow() {
+    ;(this as any)._active = true
     this.selectTab()
     this.loadHome()
     if (!runtimeConfig.wsBaseUrl) this.startPolling()
   },
 
-  onHide() { this.stopPolling() },
+  onHide() {
+    ;(this as any)._active = false
+    this.stopPolling()
+  },
 
   onUnload() {
     this.stopPolling()
@@ -60,7 +66,7 @@ Page({
       const devices = await getDevices()
       const displayDevices = devices.map((device) => ({
         ...device,
-        stateText: { online: '在线', offline: '离线', error: '异常' }[device.state],
+        stateText: { online: '在线', offline: '离线', error: '采集异常' }[device.state],
         detectionText: {
           idle: '等待检测',
           starting: '正在启动',
@@ -132,6 +138,9 @@ Page({
   },
 
   handleRealtimeEvent(event: RealtimeEvent) {
+    if (event.event === 'device.fault') {
+      this.showDeviceFaultModal(event)
+    }
     if (event.event === 'detection.fall-result' && event.data && (event.data as any).fall_detected) {
       const id = (event.data as any).fall_event_id
       if (id !== undefined) {
@@ -139,6 +148,31 @@ Page({
       }
     }
     this.loadHome()
+  },
+
+  showDeviceFaultModal(event: RealtimeEvent) {
+    if (!(this as any)._active) return
+    const data = (event.data || {}) as any
+    const code = String(data.code || '').toUpperCase()
+    if (CSI_FAULT_CODES.indexOf(code) < 0) return
+    const faultKey = `${event.device_name || ''}:${code}`
+    if ((this as any)._shownFaultKey === faultKey) return
+    ;(this as any)._shownFaultKey = faultKey
+    const templateData = data.template_data || {}
+    const content = (templateData.thing5 && templateData.thing5.value)
+      || data.message
+      || '未接收到 CSI 数据，请检查设备电源、A/B 板连接和设备摆放后恢复设备。'
+    wx.showModal({
+      title: '设备采集异常',
+      content,
+      confirmText: '去处理',
+      showCancel: false,
+      success: () => {
+        if (event.device_name) {
+          wx.navigateTo({ url: `/pages/device-detail/index?deviceName=${encodeURIComponent(event.device_name)}` })
+        }
+      },
+    })
   },
 
   formatDate(value: string): string {

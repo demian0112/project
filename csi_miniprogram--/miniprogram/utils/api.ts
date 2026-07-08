@@ -43,8 +43,10 @@ export interface DeviceProfileUpdate {
 
 export type WechatSubscriptionStatusValue = 'accept' | 'reject' | 'ban' | 'filter'
 
+export type WechatSubscriptionScene = 'fall_alert' | 'device_fault'
+
 export interface WechatSubscriptionPayload {
-  scene: 'fall_alert'
+  scene: WechatSubscriptionScene
   template_id: string
   status: WechatSubscriptionStatusValue
 }
@@ -52,11 +54,18 @@ export interface WechatSubscriptionPayload {
 export interface WechatSubscriptionStatus {
   ok: boolean
   enabled: boolean
-  scene: 'fall_alert'
+  scene: WechatSubscriptionScene
   template_id: string
   status: WechatSubscriptionStatusValue | ''
   remaining_count: number
   last_subscribed_at?: string | null
+  items?: Array<{
+    scene: WechatSubscriptionScene
+    template_id: string
+    status: WechatSubscriptionStatusValue | ''
+    remaining_count: number
+    last_subscribed_at?: string | null
+  }>
 }
 
 export interface ApiError extends Error {
@@ -193,6 +202,14 @@ export function controlDevice(deviceName: string, action: 'start' | 'stop'): Pro
     method: 'POST',
     header: { 'Idempotency-Key': createRequestId() },
     data: { action },
+  })
+}
+
+export function resetDeviceFault(deviceName: string): Promise<DeviceControlResult> {
+  return request<DeviceControlResult>(`/api/v1/devices/${encodeURIComponent(deviceName)}/reset-fault`, {
+    method: 'POST',
+    header: { 'Idempotency-Key': createRequestId() },
+    data: {},
   })
 }
 

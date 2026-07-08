@@ -101,6 +101,8 @@ class MqttManager:
             action,
             session=session,
             command_id=command_id,
+            reason=reason,
+            source=source,
         )
         if result.result_code != mqtt.MQTT_ERR_SUCCESS:
             raise MqttUnavailable(

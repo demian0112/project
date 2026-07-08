@@ -12,11 +12,25 @@ from flask import current_app
 from sqlalchemy.orm import joinedload
 
 from ..extensions import db
-from ..models import Device, FallEvent, User, WxNotifyLog, WxSubscription, utc_now
+from ..models import (
+    Device,
+    FallEvent,
+    User,
+    WxNotifyLog,
+    WxSubscription,
+    fault_template_data,
+    utc_now,
+)
 
 
 ALLOWED_SUBSCRIPTION_STATUSES = {"accept", "reject", "ban", "filter"}
 FALL_ALERT_SCENE = "fall_alert"
+DEVICE_FAULT_SCENE = "device_fault"
+DEVICE_FAULT_NOTICE_CODES = {
+    "NO_CSI_FRAME",
+    "NO_CSI_FRAME_TIMEOUT",
+    "UART_TIMEOUT",
+}
 NO_REMAINING_ERRCODE = 43101
 
 
@@ -325,6 +339,160 @@ def send_fall_alert(
     )
 
 
+def send_device_fault_notice(
+    user: User,
+    device: Device,
+    *,
+    code: str,
+    message: str,
+    triggered_by: str = "device_fault",
+) -> dict[str, Any]:
+    """Send a WeChat notice for CSI collection faults when configured."""
+    fault_code = (code or "").strip().upper()
+    if fault_code not in DEVICE_FAULT_NOTICE_CODES:
+        return _result(
+            ok=True,
+            sent=False,
+            reason="fault_code_not_notifiable",
+            errmsg="fault code is not configured for WeChat notice",
+        )
+
+    template_id = str(
+        current_app.config.get("WECHAT_DEVICE_FAULT_TEMPLATE_ID") or ""
+    ).strip()
+    if not current_app.config.get("WECHAT_NOTIFY_ENABLED"):
+        return _record_device_fault_notice_result(
+            user,
+            device,
+            template_id,
+            triggered_by,
+            success=False,
+            reason="disabled",
+            errmsg="WeChat notify is disabled",
+        )
+    if not template_id:
+        return _record_device_fault_notice_result(
+            user,
+            device,
+            template_id,
+            triggered_by,
+            success=False,
+            reason="template_not_configured",
+            errmsg="WECHAT_DEVICE_FAULT_TEMPLATE_ID is not configured",
+        )
+    if not user.wx_openid:
+        return _record_device_fault_notice_result(
+            user,
+            device,
+            template_id,
+            triggered_by,
+            success=False,
+            reason="openid_missing",
+            errmsg="user wx_openid is missing",
+        )
+
+    subscription = db.session.scalar(
+        db.select(WxSubscription).where(
+            WxSubscription.user_id == user.id,
+            WxSubscription.scene == DEVICE_FAULT_SCENE,
+            WxSubscription.template_id == template_id,
+        )
+    )
+    if subscription is None:
+        return _record_device_fault_notice_result(
+            user,
+            device,
+            template_id,
+            triggered_by,
+            success=False,
+            reason="subscription_not_found",
+            errcode=NO_REMAINING_ERRCODE,
+            errmsg="user has not granted this subscription",
+        )
+    if subscription.status != "accept":
+        return _record_device_fault_notice_result(
+            user,
+            device,
+            template_id,
+            triggered_by,
+            success=False,
+            reason="subscription_not_accepted",
+            errcode=NO_REMAINING_ERRCODE,
+            errmsg=f"subscription status is {subscription.status}",
+            remaining_count=subscription.remaining_count,
+        )
+
+    try:
+        response = send_subscribe_message(
+            user.wx_openid,
+            template_id,
+            _device_fault_page(device),
+            fault_template_data(
+                device_name=device.device_name,
+                display_name=device.display_name,
+                location=device.location,
+                code=fault_code,
+                raw_message=message,
+            )
+            or {},
+        )
+    except WeChatNotifyError as exc:
+        return _record_device_fault_notice_result(
+            user,
+            device,
+            template_id,
+            triggered_by,
+            success=False,
+            reason="wechat_request_failed",
+            errcode=exc.errcode,
+            errmsg=str(exc),
+            remaining_count=subscription.remaining_count,
+        )
+
+    errcode = _parse_errcode(response.get("errcode"))
+    errmsg = str(response.get("errmsg") or "")
+    if errcode == 0:
+        subscription.remaining_count = 1
+        now = utc_now()
+        db.session.add(
+            _notify_log(
+                user=user,
+                device=device,
+                event=None,
+                scene=DEVICE_FAULT_SCENE,
+                template_id=template_id,
+                success=True,
+                errcode=0,
+                errmsg=errmsg or "ok",
+                triggered_by=triggered_by,
+                sent_at=now,
+            )
+        )
+        db.session.commit()
+        return _result(
+            ok=True,
+            sent=True,
+            errcode=0,
+            errmsg=errmsg or "ok",
+            remaining_count=subscription.remaining_count,
+        )
+
+    if errcode == 40001:
+        current_app.extensions.pop("wechat_notify_access_token", None)
+
+    return _record_device_fault_notice_result(
+        user,
+        device,
+        template_id,
+        triggered_by,
+        success=False,
+        reason="wechat_send_failed",
+        errcode=errcode,
+        errmsg=errmsg or "WeChat subscribe send failed",
+        remaining_count=subscription.remaining_count,
+    )
+
+
 def _post_subscribe_payload(payload: dict[str, Any]) -> dict[str, Any]:
     token = get_access_token()
     response = _post_json(
@@ -346,6 +514,12 @@ def _fall_alert_page(fall_event_id: int) -> str:
     base = str(current_app.config["WECHAT_FALL_ALERT_PAGE"] or "").strip()
     separator = "&" if "?" in base else "?"
     return f"{base}{separator}id={fall_event_id}"
+
+
+def _device_fault_page(device: Device) -> str:
+    base = str(current_app.config["WECHAT_DEVICE_FAULT_PAGE"] or "").strip()
+    separator = "&" if "?" in base else "?"
+    return f"{base}{separator}{urlencode({'deviceName': device.device_name})}"
 
 
 def _fall_alert_template_data(
@@ -409,23 +583,61 @@ def _record_failure(
     )
 
 
+def _record_device_fault_notice_result(
+    user: User,
+    device: Device,
+    template_id: str | None,
+    triggered_by: str,
+    *,
+    success: bool,
+    reason: str,
+    errmsg: str,
+    errcode: int | None = None,
+    remaining_count: int | None = None,
+) -> dict[str, Any]:
+    db.session.add(
+        _notify_log(
+            user=user,
+            device=device,
+            event=None,
+            scene=DEVICE_FAULT_SCENE,
+            template_id=template_id,
+            success=success,
+            errcode=errcode,
+            errmsg=errmsg,
+            triggered_by=triggered_by,
+            sent_at=utc_now(),
+        )
+    )
+    db.session.commit()
+    return _result(
+        ok=success,
+        sent=success,
+        errcode=errcode,
+        errmsg=errmsg,
+        reason=reason,
+        remaining_count=remaining_count,
+    )
+
+
 def _notify_log(
     *,
     user: User,
     device: Device,
-    event: FallEvent,
+    event: FallEvent | None,
     template_id: str | None,
     success: bool,
     errcode: int | None,
     errmsg: str,
     triggered_by: str,
     sent_at,
+    scene: str = FALL_ALERT_SCENE,
 ) -> WxNotifyLog:
     return WxNotifyLog(
         user_id=user.id,
         device_id=device.id,
-        fall_event_id=event.id,
-        scene=FALL_ALERT_SCENE,
+        fall_event_id=event.id if event is not None else None,
+        scene=scene,
         template_id=template_id or None,
         openid_masked=_mask_openid(user.wx_openid),
         success=success,

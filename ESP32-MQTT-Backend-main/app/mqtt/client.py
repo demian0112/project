@@ -112,20 +112,29 @@ class DeviceMqttClient:
         *,
         session: str | None = None,
         command_id: str | None = None,
+        reason: str | None = None,
+        source: str | None = None,
     ) -> PublishedControl:
-        """Publish start/stop to down/control using QoS 1 and retain=false."""
-        if action not in {"start", "stop"}:
-            raise ValueError("action must be 'start' or 'stop'")
+        """Publish control actions to down/control using QoS 1 and retain=false."""
+        if action not in {"start", "stop", "reset", "clear_fault"}:
+            raise ValueError("action must be start, stop, reset or clear_fault")
         if action == "start" and not session:
             session = generate_message_id("sess")
         if action == "stop" and not session:
             raise ValueError("stop requires the current session")
 
-        # The current C-board firmware expects cmd to be the command type,
-        # not a request identifier. command_id remains a backend-side tracing
-        # value because the hardware ACK contract does not echo one.
-        del command_id
-        payload = {"cmd": "control", "action": action, "session": session}
+        payload = {
+            "cmd": "control",
+            "action": action,
+            "session": session or "",
+        }
+        if action in {"reset", "clear_fault"}:
+            if command_id:
+                payload["command_id"] = command_id
+            if reason:
+                payload["reason"] = reason
+            if source:
+                payload["source"] = source
         info = self.client.publish(
             self.topics.control,
             json.dumps(payload, separators=(",", ":")),

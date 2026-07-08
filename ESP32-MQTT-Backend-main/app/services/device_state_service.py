@@ -10,13 +10,24 @@ from typing import Any
 from sqlalchemy.orm import selectinload
 
 from ..extensions import db
-from ..models import Device, FallEvent, User, isoformat, utc_now
+from ..models import (
+    Device,
+    FallEvent,
+    User,
+    isoformat,
+    public_fault_payload,
+    utc_now,
+)
 from ..mqtt.client import generate_message_id
 from .csi_payload_service import CsiPayloadError, decode_csi_payload
 from .csi_quality_service import CsiQualityTracker
 from .fall_detect_service import predict_fall
 from .mqtt_service import MqttManager, MqttUnavailable
 from .websocket_service import websocket_hub
+from .wechat_notify_service import (
+    DEVICE_FAULT_NOTICE_CODES,
+    send_device_fault_notice,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -77,7 +88,9 @@ class DeviceCoordinator:
         )
         self._fall_emitted: set[tuple[str, str]] = set()
         self._fault_stop_requested: set[tuple[str, str]] = set()
+        self._fault_reset_pending: dict[str, tuple[float, str | None]] = {}
         self._last_fault_event: dict[tuple[str, str], float] = {}
+        self._fault_notice_sent: set[tuple[str, str]] = set()
         self._parse_error_count: dict[tuple[str, str], int] = {}
         self._last_timeout_log: dict[tuple[str, str, str], float] = {}
         self._last_offline_scan_failure_log = 0.0
@@ -112,10 +125,10 @@ class DeviceCoordinator:
         action: str,
         idempotency_key: str | None,
     ) -> dict[str, Any]:
-        if action not in {"start", "stop"}:
+        if action not in {"start", "stop", "reset"}:
             raise ControlError(
                 "INVALID_ACTION",
-                "action 只能是 start 或 stop",
+                "action 只能是 start、stop 或 reset",
                 400,
             )
 
@@ -140,8 +153,10 @@ class DeviceCoordinator:
 
             if action == "start":
                 response = self._start_device(device, idempotency_key)
-            else:
+            elif action == "stop":
                 response = self._stop_device(device, idempotency_key)
+            else:
+                response = self._reset_device_fault(device, idempotency_key)
 
             if cache_key is not None:
                 self._idempotency[cache_key] = (
@@ -152,6 +167,14 @@ class DeviceCoordinator:
                 )
             return response
 
+    def reset_device_fault(
+        self,
+        user: User,
+        device: Device,
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        return self.control_device(user, device, "reset", idempotency_key)
+
     def _start_device(
         self,
         device: Device,
@@ -160,9 +183,16 @@ class DeviceCoordinator:
         if not device.enabled:
             raise ControlError("DEVICE_DISABLED", "设备已被禁用", 409)
         if device.state == "error" or device.fault_code:
+            fault = public_fault_payload(
+                device_name=device.device_name,
+                display_name=device.display_name,
+                location=device.location,
+                code=device.fault_code,
+                raw_message=device.fault_message,
+            )
             raise ControlError(
                 "DEVICE_ERROR",
-                device.fault_message or "设备存在故障",
+                fault["message"] or "设备存在故障",
                 409,
             )
         if device.state != "online":
@@ -201,7 +231,9 @@ class DeviceCoordinator:
         device.state = "online"
         device.last_seen_at = now
         device.last_online_at = now
+        device.last_csi_at = None
         device.network_quality = "unknown"
+        self._clear_session(device.device_name, None)
 
         logger.info(
             "START_MARK_ONLINE device=%s session=%s last_seen_at=%s",
@@ -271,6 +303,65 @@ class DeviceCoordinator:
             "message": "停止命令已发送",
         }
 
+    def _reset_device_fault(
+        self,
+        device: Device,
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        if not device.enabled:
+            raise ControlError("DEVICE_DISABLED", "设备已被禁用", 409)
+        if not (
+            device.fault_code
+            or device.runtime_state == "fault"
+            or device.state == "error"
+        ):
+            raise ControlError(
+                "DEVICE_NOT_FAULTED",
+                "设备当前没有待复位故障",
+                409,
+            )
+
+        session = device.current_session or ""
+        command_id = idempotency_key or generate_message_id("cmd")
+        try:
+            self.mqtt.publish_control(
+                device.device_name,
+                "reset",
+                session,
+                command_id,
+                reason="user_fault_confirm",
+                source="user",
+            )
+        except MqttUnavailable as exc:
+            raise ControlError(
+                "MQTT_UNAVAILABLE",
+                "设备控制服务暂时不可用",
+                503,
+            ) from exc
+
+        device.detection_state = "stopping"
+        device.network_quality = "unknown"
+        self._fault_reset_pending[device.device_name] = (
+            time.monotonic(),
+            session or None,
+        )
+        db.session.commit()
+
+        logger.info(
+            "RESET_FAULT_PUBLISHED device=%s session=%s",
+            device.device_name,
+            session or "",
+        )
+
+        return {
+            "accepted": True,
+            "device_name": device.device_name,
+            "action": "reset",
+            "control_state": "published",
+            "session": session or None,
+            "message": "复位命令已发送",
+        }
+
     def handle_mqtt_payload(
         self,
         device_name: str,
@@ -328,17 +419,13 @@ class DeviceCoordinator:
         device.last_seen_at = now
 
         if online:
-            device.state = "online"
             device.last_online_at = now
-            if device.runtime_state == "fault":
-                device.runtime_state = "idle"
-            device.fault_code = None
-            device.fault_message = None
-            self._fault_stop_requested = {
-                key
-                for key in self._fault_stop_requested
-                if key[0] != device.device_name
-            }
+            if (
+                device.state != "error"
+                and device.runtime_state != "fault"
+                and not device.fault_code
+            ):
+                device.state = "online"
         else:
             hard_timeout = float(self.app.config["CSI_HARD_TIMEOUT_SECONDS"])
 
@@ -402,22 +489,64 @@ class DeviceCoordinator:
                 runtime_state,
             )
             return
+        reported_session = str(payload.get("session") or "").strip()
         if runtime_state == "fault":
             device.last_status_at = now
+            if reported_session and not device.current_session:
+                device.current_session = reported_session
             self._record_fault(
                 device,
-                code=str(payload.get("code") or "DEVICE_FAULT_STATE"),
+                code=str(
+                    payload.get("code")
+                    or payload.get("fault_code")
+                    or device.fault_code
+                    or "DEVICE_FAULT_STATE"
+                ),
                 message=str(
                     payload.get("msg")
                     or payload.get("message")
+                    or payload.get("fault_message")
+                    or device.fault_message
                     or "设备状态进入 fault"
                 ),
                 now=now,
             )
             return
 
+        if (
+            runtime_state == "idle"
+            and self._consume_fault_reset_pending(device, reported_session)
+        ):
+            old_session = device.current_session
+            device.last_status_at = now
+            self._clear_fault(device, old_session, now)
+            db.session.commit()
+            self._push_runtime_event(
+                device,
+                {
+                    "control_ok": True,
+                    "action": "reset",
+                    "fault_cleared": True,
+                    "message": "设备异常已确认，设备已恢复到待检测状态",
+                },
+            )
+            return
+
+        if (
+            device.state == "error"
+            or device.runtime_state == "fault"
+            or device.fault_code
+        ):
+            device.last_seen_at = now
+            device.last_status_at = now
+            db.session.commit()
+            logger.info(
+                "Ignored non-fault status for %s while fault is pending",
+                device.device_name,
+            )
+            return
+
         old_session = device.current_session
-        reported_session = str(payload.get("session") or "").strip()
         device.last_seen_at = now
         device.last_status_at = now
         device.runtime_state = runtime_state
@@ -439,6 +568,8 @@ class DeviceCoordinator:
                 return
             if reported_session and not device.current_session:
                 device.current_session = reported_session
+                device.last_csi_at = None
+                self._clear_session(device.device_name, None)
             if (
                 device.detection_state in {"starting", "running"}
                 or device.current_session
@@ -471,6 +602,20 @@ class DeviceCoordinator:
         device: Device,
         payload: dict[str, Any],
     ) -> None:
+        reported_session = str(payload.get("session") or "").strip()
+        if (
+            reported_session
+            and device.current_session
+            and reported_session != device.current_session
+        ):
+            logger.info(
+                "Ignored fault with stale session for %s",
+                device.device_name,
+            )
+            return
+        if reported_session and not device.current_session:
+            device.current_session = reported_session
+
         self._record_fault(
             device,
             code=str(
@@ -497,18 +642,10 @@ class DeviceCoordinator:
             return
         action = str(payload.get("action") or "").strip().lower()
         ok = _payload_bool(payload.get("ok"))
-        if action not in {"start", "stop"} or ok is None:
-            return
-
-        pending_state = "starting" if action == "start" else "stopping"
-        final_state = "running" if action == "start" else "idle"
-        if device.detection_state not in {pending_state, final_state}:
-            logger.info(
-                "Ignored stale %s ACK for %s in detection state %s",
-                action,
-                device.device_name,
-                device.detection_state,
-            )
+        if (
+            action not in {"start", "stop", "reset", "clear_fault"}
+            or ok is None
+        ):
             return
 
         ack_session = str(payload.get("session") or "").strip()
@@ -527,6 +664,46 @@ class DeviceCoordinator:
         old_session = device.current_session
         ack_state = str(payload.get("state") or "").strip().lower()
         device.last_seen_at = now
+        if action in {"reset", "clear_fault"}:
+            if ok:
+                self._clear_fault(device, old_session, now)
+            else:
+                self._fault_reset_pending.pop(device.device_name, None)
+                device.state = "error"
+                device.runtime_state = "fault"
+                device.network_quality = "unknown"
+            db.session.commit()
+            self._push_runtime_event(
+                device,
+                {
+                    "control_ok": ok,
+                    "action": action,
+                    "err": payload.get("err", 0),
+                    "fault_cleared": ok,
+                    "message": (
+                        "设备异常已确认，设备已恢复到待检测状态"
+                        if ok
+                        else str(
+                            payload.get("msg")
+                            or payload.get("message")
+                            or "设备复位失败"
+                        )
+                    ),
+                },
+            )
+            return
+
+        pending_state = "starting" if action == "start" else "stopping"
+        final_state = "running" if action == "start" else "idle"
+        if device.detection_state not in {pending_state, final_state}:
+            logger.info(
+                "Ignored stale %s ACK for %s in detection state %s",
+                action,
+                device.device_name,
+                device.detection_state,
+            )
+            return
+
         if action == "start":
             if ok:
                 device.runtime_state = (
@@ -549,11 +726,14 @@ class DeviceCoordinator:
                 device.network_quality = "unknown"
                 self._clear_session(device.device_name, old_session)
         elif ok:
-            device.runtime_state = (
-                ack_state
-                if ack_state in HARDWARE_RUNTIME_STATES
-                else "idle"
-            )
+            if device.state == "error" or device.fault_code:
+                device.runtime_state = "fault"
+            else:
+                device.runtime_state = (
+                    ack_state
+                    if ack_state in HARDWARE_RUNTIME_STATES
+                    else "idle"
+                )
             device.detection_state = "idle"
             device.current_session = None
             device.network_quality = "unknown"
@@ -762,17 +942,52 @@ class DeviceCoordinator:
         last_event = self._last_fault_event.get(event_key)
         if last_event is None or time.monotonic() - last_event >= limit:
             self._last_fault_event[event_key] = time.monotonic()
+            fault_data = public_fault_payload(
+                device_name=device.device_name,
+                display_name=device.display_name,
+                location=device.location,
+                code=code,
+                raw_message=message,
+            )
             websocket_hub.push_to_user(
                 device.owner_user_id,
                 "device.fault",
                 device.device_name,
                 {
                     "state": "error",
-                    "code": code,
-                    "message": message,
+                    **fault_data,
                     "auto_stop_requested": should_stop,
                 },
             )
+
+        notice_code = code.upper()
+        notice_key = (device.device_name, notice_code)
+        if (
+            notice_code in DEVICE_FAULT_NOTICE_CODES
+            and notice_key not in self._fault_notice_sent
+        ):
+            self._fault_notice_sent.add(notice_key)
+            if device.owner is not None:
+                try:
+                    result = send_device_fault_notice(
+                        device.owner,
+                        device,
+                        code=code,
+                        message=message,
+                    )
+                    logger.info(
+                        "DEVICE_FAULT_WECHAT_NOTICE device=%s code=%s sent=%s "
+                        "reason=%s",
+                        device.device_name,
+                        code,
+                        result.get("sent"),
+                        result.get("reason"),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to send device fault notice for %s",
+                        device.device_name,
+                    )
 
         if not should_stop or stop_key is None or session is None:
             return
@@ -872,18 +1087,86 @@ class DeviceCoordinator:
             data,
         )
 
-    def _mark_device_offline(self, device: Device) -> None:
-        old_session = device.current_session
-        device.state = "offline"
+    def _clear_fault(
+        self,
+        device: Device,
+        old_session: str | None,
+        now: datetime,
+    ) -> None:
+        self._fault_reset_pending.pop(device.device_name, None)
+        device.state = "online"
         device.runtime_state = "idle"
         device.detection_state = "idle"
         device.current_session = None
         device.network_quality = "unknown"
+        device.fault_code = None
+        device.fault_message = None
+        device.last_seen_at = now
+        device.last_online_at = now
         self._clear_session(device.device_name, old_session)
         if old_session:
             self._fault_stop_requested.discard(
                 (device.device_name, old_session)
             )
+        self._fault_stop_requested = {
+            key
+            for key in self._fault_stop_requested
+            if key[0] != device.device_name
+        }
+        self._fault_notice_sent = {
+            key
+            for key in self._fault_notice_sent
+            if key[0] != device.device_name
+        }
+        for key in [
+            key for key in self._last_fault_event if key[0] == device.device_name
+        ]:
+            self._last_fault_event.pop(key, None)
+
+    def _consume_fault_reset_pending(
+        self,
+        device: Device,
+        reported_session: str,
+    ) -> bool:
+        pending = self._fault_reset_pending.get(device.device_name)
+        if pending is None:
+            return False
+        created_at, pending_session = pending
+        if time.monotonic() - created_at > 120:
+            self._fault_reset_pending.pop(device.device_name, None)
+            return False
+        if (
+            reported_session
+            and pending_session
+            and reported_session != pending_session
+        ):
+            return False
+        return True
+
+    def _mark_device_offline(self, device: Device) -> None:
+        old_session = device.current_session
+        self._fault_reset_pending.pop(device.device_name, None)
+        device.state = "offline"
+        device.runtime_state = "idle"
+        device.detection_state = "idle"
+        device.current_session = None
+        device.network_quality = "unknown"
+        device.fault_code = None
+        device.fault_message = None
+        self._clear_session(device.device_name, old_session)
+        if old_session:
+            self._fault_stop_requested.discard(
+                (device.device_name, old_session)
+            )
+        self._fault_notice_sent = {
+            key
+            for key in self._fault_notice_sent
+            if key[0] != device.device_name
+        }
+        for key in [
+            key for key in self._last_fault_event if key[0] == device.device_name
+        ]:
+            self._last_fault_event.pop(key, None)
 
     def scan_offline_devices(self) -> int:
         try:

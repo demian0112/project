@@ -50,6 +50,7 @@
         <view class="metric"><text class="metric-label">CSI 网络</text><text class="metric-value {{item.qualityClass}}">{{item.qualityLabel}}</text></view>
         <view class="enter-detail"><text>进入设备</text><view class="chevron"></view></view>
       </view>
+      <view wx:if="{{item.state === 'error' && item.fault_message}}" class="fault-line">{{item.fault_message}}</view>
     </view>
   </view>
 
