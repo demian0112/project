@@ -1,10 +1,37 @@
 from pathlib import Path
+import threading
 
 from flask import Flask
 from sqlalchemy import inspect
 
 from .config import configure_app
 from .extensions import db, sock
+
+
+_background_services_lock = threading.RLock()
+_background_services_started = False
+
+
+def _start_background_services(app: Flask, coordinator) -> None:
+    global _background_services_started
+
+    if app.config["TESTING"]:
+        return
+    if not (
+        app.config["MQTT_AUTOSTART_DEVICES"]
+        or app.config["OFFLINE_MONITOR_ENABLED"]
+    ):
+        return
+
+    with _background_services_lock:
+        if _background_services_started:
+            app.logger.info("Background services already started; skipping")
+            return
+
+        if app.config["MQTT_AUTOSTART_DEVICES"]:
+            coordinator.ensure_all_devices()
+        coordinator.start_monitor()
+        _background_services_started = True
 
 
 def create_app(test_config: dict | None = None) -> Flask:
@@ -42,8 +69,6 @@ def create_app(test_config: dict | None = None) -> Flask:
     with app.app_context():
         ensure_database_schema()
         if "devices" in inspect(db.engine).get_table_names():
-            if app.config["MQTT_AUTOSTART_DEVICES"]:
-                coordinator.ensure_all_devices()
-            coordinator.start_monitor()
+            _start_background_services(app, coordinator)
 
     return app

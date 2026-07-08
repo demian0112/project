@@ -80,6 +80,7 @@ class DeviceCoordinator:
         self._last_fault_event: dict[tuple[str, str], float] = {}
         self._parse_error_count: dict[tuple[str, str], int] = {}
         self._last_timeout_log: dict[tuple[str, str, str], float] = {}
+        self._last_offline_scan_failure_log = 0.0
         self._idempotency: dict[
             tuple[int, str],
             tuple[float, str, str, dict[str, Any]],
@@ -315,6 +316,15 @@ class DeviceCoordinator:
                 value,
             )
             return
+        if (
+            not online
+            and device.state == "offline"
+            and device.runtime_state == "idle"
+            and device.detection_state == "idle"
+            and device.current_session is None
+            and device.network_quality == "unknown"
+        ):
+            return
         device.last_seen_at = now
 
         if online:
@@ -351,17 +361,7 @@ class DeviceCoordinator:
                     db.session.commit()
                     return
 
-            old_session = device.current_session
-            device.state = "offline"
-            device.detection_state = "idle"
-            device.runtime_state = "idle"
-            device.current_session = None
-            device.network_quality = "unknown"
-            self._clear_session(device.device_name, old_session)
-            if old_session:
-                self._fault_stop_requested.discard(
-                    (device.device_name, old_session)
-                )
+            self._mark_device_offline(device)
 
         db.session.commit()
         websocket_hub.push_to_user(
@@ -872,7 +872,27 @@ class DeviceCoordinator:
             data,
         )
 
+    def _mark_device_offline(self, device: Device) -> None:
+        old_session = device.current_session
+        device.state = "offline"
+        device.runtime_state = "idle"
+        device.detection_state = "idle"
+        device.current_session = None
+        device.network_quality = "unknown"
+        self._clear_session(device.device_name, old_session)
+        if old_session:
+            self._fault_stop_requested.discard(
+                (device.device_name, old_session)
+            )
+
     def scan_offline_devices(self) -> int:
+        try:
+            return self._scan_offline_devices()
+        except Exception:
+            db.session.rollback()
+            raise
+
+    def _scan_offline_devices(self) -> int:
         now = utc_now()
         offline_timeout = self.app.config["OFFLINE_TIMEOUT_SECONDS"]
         expected_interval = float(
@@ -882,8 +902,32 @@ class DeviceCoordinator:
         soft_timeout = float(self.app.config["CSI_SOFT_TIMEOUT_SECONDS"])
         recovery_grace = float(self.app.config["CSI_RECOVERY_GRACE_SECONDS"])
         hard_timeout = float(self.app.config["CSI_HARD_TIMEOUT_SECONDS"])
-        changed: list[Device] = []
-        quality_changed: list[Device] = []
+        changed: list[dict[str, Any]] = []
+        quality_changed: list[dict[str, Any]] = []
+
+        def offline_event(device: Device) -> dict[str, Any]:
+            return {
+                "user_id": device.owner_user_id,
+                "device_name": device.device_name,
+                "data": {
+                    "state": "offline",
+                    "last_seen_at": isoformat(device.last_seen_at),
+                },
+            }
+
+        def quality_event(
+            device: Device,
+            network_quality: str,
+        ) -> dict[str, Any]:
+            return {
+                "user_id": device.owner_user_id,
+                "device_name": device.device_name,
+                "data": {
+                    "session": device.current_session,
+                    "network_quality": network_quality,
+                    "last_csi_at": isoformat(device.last_csi_at),
+                },
+            }
 
         with self._lock:
             devices = db.session.scalars(
@@ -895,32 +939,35 @@ class DeviceCoordinator:
                     if last_signal is None:
                         continue
                     gap = (now - last_signal).total_seconds()
-                if device.detection_state == "starting":
-                    start_grace = float(self.app.config["START_GRACE_SECONDS"])
-
-                    if gap <= start_grace:
-                        self._log_csi_timeout(
-                            device,
-                            gap,
-                            "START_GRACE",
-                            "keep_starting",
-                        )
-                        continue
-
-                    if gap <= hard_timeout:
-                        if device.network_quality != "poor":
-                            device.network_quality = "poor"
-                            quality_changed.append(device)
-                        self._log_csi_timeout(
-                            device,
-                            gap,
-                            "START_GRACE_EXCEEDED",
-                            "degrade_quality_keep_starting",
-                        )
-                        continue
 
                     if gap > hard_timeout:
                         old_session = device.current_session
+                        if (
+                            old_session
+                            and (
+                                device.detection_state
+                                in {"starting", "running"}
+                                or device.runtime_state == "uploading"
+                            )
+                        ):
+                            logger.warning(
+                                "CSI_HARD_TIMEOUT_FAULT device=%s "
+                                "session=%s gap=%.1f action=record_fault",
+                                device.device_name,
+                                old_session,
+                                gap,
+                            )
+                            self._record_fault(
+                                device,
+                                code="NO_CSI_FRAME_TIMEOUT",
+                                message=(
+                                    "启动检测后未收到 CSI 数据，请检查 A 板供电、"
+                                    "A/B 板链路或采集源"
+                                ),
+                                now=now,
+                            )
+                            continue
+
                         logger.warning(
                             "CSI_HARD_TIMEOUT device=%s session=%s gap=%.1f "
                             "action=mark_offline",
@@ -928,17 +975,34 @@ class DeviceCoordinator:
                             old_session,
                             gap,
                         )
-                        device.state = "offline"
-                        device.runtime_state = "idle"
-                        device.detection_state = "idle"
-                        device.current_session = None
-                        device.network_quality = "unknown"
-                        self._clear_session(device.device_name, old_session)
-                        if old_session:
-                            self._fault_stop_requested.discard(
-                                (device.device_name, old_session)
+                        self._mark_device_offline(device)
+                        changed.append(offline_event(device))
+                        continue
+
+                    if device.detection_state == "starting":
+                        start_grace = float(
+                            self.app.config["START_GRACE_SECONDS"]
+                        )
+                        if gap <= start_grace:
+                            self._log_csi_timeout(
+                                device,
+                                gap,
+                                "START_GRACE",
+                                "keep_starting",
                             )
-                        changed.append(device)
+                            continue
+
+                        if device.network_quality != "poor":
+                            device.network_quality = "poor"
+                            quality_changed.append(
+                                quality_event(device, "poor")
+                            )
+                        self._log_csi_timeout(
+                            device,
+                            gap,
+                            "START_GRACE_EXCEEDED",
+                            "degrade_quality_keep_starting",
+                        )
                         continue
 
                     target_quality = None
@@ -966,7 +1030,9 @@ class DeviceCoordinator:
                         and device.network_quality != target_quality
                     ):
                         device.network_quality = target_quality
-                        quality_changed.append(device)
+                        quality_changed.append(
+                            quality_event(device, target_quality)
+                        )
                     continue
 
                 last_seen_at = _aware(device.last_seen_at)
@@ -974,39 +1040,25 @@ class DeviceCoordinator:
                     last_seen_at is not None
                     and (now - last_seen_at).total_seconds() > offline_timeout
                 ):
-                    old_session = device.current_session
-                    device.state = "offline"
-                    device.runtime_state = "idle"
-                    device.detection_state = "idle"
-                    device.current_session = None
-                    device.network_quality = "unknown"
-                    self._clear_session(device.device_name, old_session)
-                    if old_session:
-                        self._fault_stop_requested.discard(
-                            (device.device_name, old_session)
-                        )
-                    changed.append(device)
+                    self._mark_device_offline(device)
+                    changed.append(offline_event(device))
 
             if changed or quality_changed:
                 db.session.commit()
 
-        for device in changed:
+        for event in changed:
             websocket_hub.push_to_user(
-                device.owner_user_id,
+                event["user_id"],
                 "device.state.changed",
-                device.device_name,
-                {"state": "offline", "last_seen_at": isoformat(device.last_seen_at)},
+                event["device_name"],
+                event["data"],
             )
-        for device in quality_changed:
+        for event in quality_changed:
             websocket_hub.push_to_user(
-                device.owner_user_id,
+                event["user_id"],
                 "detection.network-quality",
-                device.device_name,
-                {
-                    "session": device.current_session,
-                    "network_quality": "poor",
-                    "last_csi_at": isoformat(device.last_csi_at),
-                },
+                event["device_name"],
+                event["data"],
             )
         return len(changed)
 
@@ -1063,6 +1115,14 @@ class DeviceCoordinator:
             action,
         )
 
+    def _log_offline_scan_failure(self, exc: Exception) -> None:
+        now = time.monotonic()
+        if now - self._last_offline_scan_failure_log >= 30:
+            self._last_offline_scan_failure_log = now
+            self.app.logger.exception("Device offline scan failed")
+            return
+        self.app.logger.warning("Device offline scan failed: %s", exc)
+
     def start_monitor(self) -> None:
         if (
             self._monitor_started
@@ -1075,11 +1135,13 @@ class DeviceCoordinator:
         def monitor() -> None:
             while True:
                 time.sleep(2)
-                try:
-                    with self.app.app_context():
+                with self.app.app_context():
+                    try:
                         self.scan_offline_devices()
-                except Exception:
-                    self.app.logger.exception("Device offline scan failed")
+                    except Exception as exc:
+                        self._log_offline_scan_failure(exc)
+                    finally:
+                        db.session.remove()
 
         threading.Thread(
             target=monitor,

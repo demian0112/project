@@ -81,8 +81,27 @@ def register_websocket_routes(app) -> None:
             websocket.close()
             return
 
-        user = db.session.get(User, user_id)
-        if user is None or user.status != "active":
+        try:
+            user = db.session.get(User, user_id)
+            user_active = user is not None and user.status == "active"
+        except Exception:
+            db.session.rollback()
+            app.logger.exception("WebSocket user lookup failed")
+            websocket.send(
+                json.dumps(
+                    {
+                        "error": "SERVER_ERROR",
+                        "message": "WebSocket authentication failed",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            websocket.close()
+            return
+        finally:
+            db.session.remove()
+
+        if not user_active:
             websocket.send(
                 json.dumps(
                     {
@@ -95,18 +114,22 @@ def register_websocket_routes(app) -> None:
             websocket.close()
             return
 
-        websocket_hub.add(user_id, websocket)
-        websocket.send(
-            json.dumps(
-                {"event": "connection.ready", "data": {"user_id": user_id}},
-                separators=(",", ":"),
-            )
-        )
+        registered = False
         try:
+            websocket_hub.add(user_id, websocket)
+            registered = True
+            websocket.send(
+                json.dumps(
+                    {"event": "connection.ready", "data": {"user_id": user_id}},
+                    separators=(",", ":"),
+                )
+            )
             while websocket.receive() is not None:
                 pass
         finally:
-            websocket_hub.remove(user_id, websocket)
+            if registered:
+                websocket_hub.remove(user_id, websocket)
+            db.session.remove()
 
     # Keep a reference for tests and application services.
     app.extensions["websocket_hub"] = websocket_hub

@@ -25,6 +25,10 @@ def configure_app(app: Flask) -> None:
             f"sqlite:///{database_path}",
         ),
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        SQLALCHEMY_ENGINE_OPTIONS={
+            "pool_pre_ping": True,
+            "pool_recycle": 1800,
+        },
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         INITIAL_ADMIN_USERNAME=os.getenv("ADMIN_USERNAME"),
@@ -83,19 +87,19 @@ def configure_app(app: Flask) -> None:
             os.getenv("CSI_EXPECTED_INTERVAL_SECONDS", "1.5")
         ),
         CSI_SOFT_TIMEOUT_SECONDS=float(
-            os.getenv("CSI_SOFT_TIMEOUT_SECONDS", "8")
+            os.getenv("CSI_SOFT_TIMEOUT_SECONDS", "10")
         ),
         CSI_RECOVERY_GRACE_SECONDS=float(
             os.getenv("CSI_RECOVERY_GRACE_SECONDS", "20")
         ),
         CSI_HARD_TIMEOUT_SECONDS=float(
-            os.getenv("CSI_HARD_TIMEOUT_SECONDS", "30")
+            os.getenv("CSI_HARD_TIMEOUT_SECONDS", "35")
         ),
         RUNNING_IGNORE_STATUS_TIMEOUT=env_bool(
             "RUNNING_IGNORE_STATUS_TIMEOUT",
             True,
         ),
-        START_GRACE_SECONDS=float(os.getenv("START_GRACE_SECONDS", "15")),
+        START_GRACE_SECONDS=float(os.getenv("START_GRACE_SECONDS", "10")),
         CSI_PARSE_ERROR_LIMIT=int(os.getenv("CSI_PARSE_ERROR_LIMIT", "3")),
         CSI_WINDOW_SIZE=int(os.getenv("CSI_WINDOW_SIZE", "5")),
         FAULT_EVENT_LIMIT_SECONDS=int(

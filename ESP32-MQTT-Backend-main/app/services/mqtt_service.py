@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
 
+from ..extensions import db
 from ..mqtt import DeviceMqttClient
 
 
@@ -113,13 +114,16 @@ class MqttManager:
         topic_name: str,
         payload: dict[str, Any],
     ) -> None:
-        try:
-            with self.app.app_context():
+        with self.app.app_context():
+            try:
                 self.on_payload(device_name, topic_name, payload)
-        except Exception:
-            logger.exception(
-                "Failed to process MQTT %s for %s",
-                topic_name,
-                device_name,
-            )
+            except Exception:
+                db.session.rollback()
+                logger.exception(
+                    "Failed to process MQTT %s for %s",
+                    topic_name,
+                    device_name,
+                )
+            finally:
+                db.session.remove()
 

@@ -1,6 +1,7 @@
 import base64
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import func, inspect
 
 from app.extensions import db
@@ -931,6 +932,103 @@ def test_running_csi_gap_degrades_quality_before_hard_offline(app):
         assert device.state == "offline"
         assert device.detection_state == "idle"
         assert device.current_session is None
+
+
+def test_offline_scan_rolls_back_on_failure(monkeypatch, app):
+    with app.app_context():
+        coordinator = app.extensions["device_coordinator"]
+        calls = []
+        original_rollback = db.session.rollback
+
+        def fail_scan():
+            raise RuntimeError("scan failed")
+
+        def rollback():
+            calls.append("rollback")
+            original_rollback()
+
+        monkeypatch.setattr(coordinator, "_scan_offline_devices", fail_scan)
+        monkeypatch.setattr(db.session, "rollback", rollback)
+
+        with pytest.raises(RuntimeError, match="scan failed"):
+            coordinator.scan_offline_devices()
+
+        assert calls == ["rollback"]
+
+
+def test_repeated_offline_payload_does_not_push_duplicate_event(monkeypatch, app):
+    pushed = []
+    monkeypatch.setattr(
+        "app.services.device_state_service.websocket_hub.push_to_user",
+        lambda *args: pushed.append(args),
+    )
+
+    with app.app_context():
+        user = User(wx_openid="wx-offline-repeat")
+        device = Device(
+            device_name="offline-repeat-device",
+            owner=user,
+            state="offline",
+            runtime_state="idle",
+            detection_state="idle",
+            current_session=None,
+            network_quality="unknown",
+        )
+        db.session.add_all([user, device])
+        db.session.commit()
+
+        app.extensions["device_coordinator"].handle_mqtt_payload(
+            device.device_name,
+            "online",
+            {"status": "offline"},
+        )
+
+        assert pushed == []
+
+
+def test_mqtt_dispatch_removes_session_after_message(monkeypatch, app):
+    manager = app.extensions["device_coordinator"].mqtt
+    calls = []
+    original_remove = db.session.remove
+
+    def remove():
+        calls.append("remove")
+        original_remove()
+
+    monkeypatch.setattr(manager, "on_payload", lambda *args: calls.append("handled"))
+    monkeypatch.setattr(db.session, "remove", remove)
+
+    manager._dispatch("mqtt-clean-device", "online", {"status": "online"})
+
+    assert "handled" in calls
+    assert "remove" in calls
+
+
+def test_mqtt_dispatch_rolls_back_and_removes_on_error(monkeypatch, app):
+    manager = app.extensions["device_coordinator"].mqtt
+    calls = []
+    original_rollback = db.session.rollback
+    original_remove = db.session.remove
+
+    def fail_payload(*_args):
+        raise RuntimeError("payload failed")
+
+    def rollback():
+        calls.append("rollback")
+        original_rollback()
+
+    def remove():
+        calls.append("remove")
+        original_remove()
+
+    monkeypatch.setattr(manager, "on_payload", fail_payload)
+    monkeypatch.setattr(db.session, "rollback", rollback)
+    monkeypatch.setattr(db.session, "remove", remove)
+
+    manager._dispatch("mqtt-fail-device", "online", {"status": "online"})
+
+    assert "rollback" in calls
+    assert "remove" in calls
 
 
 def test_csi_seq_reset_keeps_session_and_clears_algorithm_window(app):
