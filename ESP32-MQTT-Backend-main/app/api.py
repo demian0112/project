@@ -10,6 +10,11 @@ from sqlalchemy.orm import joinedload, selectinload
 from .auth import admin_required, csrf_is_valid
 from .extensions import db
 from .models import Device, FallEvent, User, isoformat, utc_now
+from .services.csi_live_buffer_service import (
+    DEFAULT_SNAPSHOT_FRAMES,
+    clamp_snapshot_frames,
+    csi_live_buffer_service,
+)
 from .services.wechat_notify_service import send_fall_alert
 from .services.websocket_service import websocket_hub
 
@@ -243,6 +248,43 @@ def device_detail(device_id: int):
             device.device_name
         )
     return jsonify(device.to_dict())
+
+
+@api_bp.get("/devices/<string:device_name>/csi-heatmap")
+def device_csi_heatmap(device_name: str):
+    device = db.session.scalar(
+        db.select(Device).where(Device.device_name == device_name)
+    )
+    if device is None:
+        return error_response("device not found", 404)
+
+    try:
+        requested_frames = int(
+            request.args.get("frames", DEFAULT_SNAPSHOT_FRAMES)
+        )
+    except (TypeError, ValueError):
+        return error_response("frames must be an integer", 400)
+
+    frames = clamp_snapshot_frames(requested_frames)
+    heatmap = csi_live_buffer_service.get_snapshot(device.device_name, frames)
+    return jsonify(
+        {
+            "ok": bool(heatmap.get("ok")),
+            "device": {
+                "id": device.id,
+                "device_name": device.device_name,
+                "display_name": device.display_name,
+                "state": device.state,
+                "runtime_state": device.runtime_state,
+                "detection_state": device.detection_state,
+                "current_session": device.current_session,
+                "network_quality": device.network_quality,
+                "last_seen_at": isoformat(device.last_seen_at),
+                "last_csi_at": isoformat(device.last_csi_at),
+            },
+            "heatmap": heatmap,
+        }
+    )
 
 
 @api_bp.post("/devices/<int:device_id>/simulate-fall")

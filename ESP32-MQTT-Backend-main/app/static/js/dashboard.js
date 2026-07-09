@@ -407,6 +407,9 @@ function deviceRow(device) {
       </td>
       <td>
         <span class="table-actions">
+          <a class="icon-button live" href="/admin/devices/${encodeURIComponent(device.device_uid)}/dashboard">
+            CSI
+          </a>
           <button class="icon-button" type="button" data-edit-device="${escapeHtml(device.id)}">
             编辑
           </button>

@@ -1,4 +1,5 @@
 from flask import (
+    abort,
     Blueprint,
     flash,
     redirect,
@@ -16,7 +17,7 @@ from .auth import (
     log_out_admin,
 )
 from .extensions import db
-from .models import Admin, utc_now
+from .models import Admin, Device, utc_now
 
 
 site_bp = Blueprint("site", __name__)
@@ -73,6 +74,22 @@ def dashboard():
         "dashboard.html",
         admin=current_admin(),
         csrf_token=csrf_token(),
+    )
+
+
+@site_bp.get("/admin/devices/<string:device_name>/dashboard")
+@admin_required
+def device_dashboard(device_name: str):
+    device = db.session.scalar(
+        db.select(Device).where(Device.device_name == device_name)
+    )
+    if device is None:
+        abort(404)
+    return render_template(
+        "device_dashboard.html",
+        admin=current_admin(),
+        csrf_token=csrf_token(),
+        device=device,
     )
 
 

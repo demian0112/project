@@ -19,6 +19,8 @@ from ..models import (
     utc_now,
 )
 from ..mqtt.client import generate_message_id
+from .csi_feature_service import raw_iq_to_amplitude
+from .csi_live_buffer_service import csi_live_buffer_service
 from .csi_payload_service import CsiPayloadError, decode_csi_payload
 from .csi_quality_service import CsiQualityTracker
 from .fall_detect_service import predict_fall
@@ -794,6 +796,8 @@ class DeviceCoordinator:
             self._record_csi_parse_error(device, session, str(exc))
             return
 
+        self._push_live_csi_frames(device.device_name, session, batch)
+
         now = utc_now()
         previous_quality = device.network_quality
         old_runtime_state = device.runtime_state
@@ -903,6 +907,34 @@ class DeviceCoordinator:
                 },
             )
 
+    def _push_live_csi_frames(
+        self,
+        device_name: str,
+        session: str,
+        batch: Any,
+    ) -> None:
+        for frame in batch.frames:
+            try:
+                amplitude = raw_iq_to_amplitude(frame.raw_csi)
+                if not amplitude:
+                    continue
+                csi_live_buffer_service.push_frame(
+                    device_name=device_name,
+                    session=session,
+                    sequence=frame.sequence,
+                    timestamp_us=frame.timestamp_us,
+                    rssi=frame.rssi,
+                    amplitude=amplitude,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Ignored CSI live frame for %s session=%s seq=%s: %s",
+                    device_name,
+                    session,
+                    getattr(frame, "sequence", None),
+                    exc,
+                )
+
     def _record_fault(
         self,
         device: Device,
@@ -928,6 +960,7 @@ class DeviceCoordinator:
         device.runtime_state = "fault"
         device.fault_code = code
         device.fault_message = message
+        csi_live_buffer_service.clear_device(device.device_name)
         if should_stop:
             device.detection_state = "stopping"
             device.network_quality = "unknown"
@@ -1438,6 +1471,7 @@ class DeviceCoordinator:
         session: str | None,
     ) -> None:
         self.quality.clear(device_name, session)
+        csi_live_buffer_service.clear_session(device_name, session)
         if session is None:
             for key in [
                 key for key in self._csi_windows if key[0] == device_name
