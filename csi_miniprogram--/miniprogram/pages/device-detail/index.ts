@@ -1,13 +1,12 @@
 import { runtimeConfig } from '../../config/env'
 import { DeviceDetail, FallEvent, RealtimeEvent } from '../../models/domain'
-import type { WechatSubscriptionScene, WechatSubscriptionStatusValue } from '../../utils/api'
+import type { WechatSubscriptionStatusValue } from '../../utils/api'
 import {
   controlDevice,
   getDeviceDetail,
   getFallEvents,
   qualityText,
   registerWechatSubscription,
-  resetDeviceFault,
   updateFallEvent,
 } from '../../utils/api'
 import { realtimeClient } from '../../services/realtime'
@@ -15,7 +14,6 @@ import { realtimeClient } from '../../services/realtime'
 const CONTROL_TIMEOUT_MS = 15000
 const CONTROL_POLL_MS = 1500
 type LightState = 'normal' | 'fall' | 'error' | 'offline'
-const CSI_FAULT_CODES = ['NO_CSI_FRAME', 'NO_CSI_FRAME_TIMEOUT', 'UART_TIMEOUT']
 
 Page({
   data: {
@@ -25,7 +23,6 @@ Page({
     loading: true,
     loadError: '',
     controlLoading: false,
-    resetLoading: false,
     pendingAction: '' as '' | 'start' | 'stop',
     pendingDeadline: 0,
     stateText: '未知',
@@ -53,16 +50,11 @@ Page({
   },
 
   onShow() {
-    ;(this as any)._active = true
     if (!runtimeConfig.wsBaseUrl) this.startPolling()
     if (this.data.pendingAction) this.scheduleControlCheck()
   },
 
-  onHide() {
-    ;(this as any)._active = false
-    this.stopPolling()
-    this.stopControlTimer()
-  },
+  onHide() { this.stopPolling(); this.stopControlTimer() },
 
   onUnload() {
     this.stopPolling()
@@ -153,7 +145,7 @@ Page({
     }
     const action = device.detection_state === 'running' ? 'stop' : 'start'
     if (action === 'start') {
-      await this.promptStartupSubscriptionsBeforeStart()
+      await this.promptFallAlertSubscriptionBeforeStart()
       if (this.data.controlLoading) return
     }
     const pendingState = action === 'start' ? 'starting' : 'stopping'
@@ -177,23 +169,14 @@ Page({
     }
   },
 
-  async promptStartupSubscriptionsBeforeStart() {
-    const entries = [
-      {
-        scene: 'fall_alert' as WechatSubscriptionScene,
-        templateId: runtimeConfig.subscribeTemplateIds.fallAlert || runtimeConfig.subscribeTemplateId,
-      },
-      {
-        scene: 'device_fault' as WechatSubscriptionScene,
-        templateId: runtimeConfig.subscribeTemplateIds.deviceFault,
-      },
-    ].filter((item) => Boolean(item.templateId))
-    if (!entries.length || typeof wx.requestSubscribeMessage !== 'function') return
+  async promptFallAlertSubscriptionBeforeStart() {
+    const templateId = runtimeConfig.subscribeTemplateIds.fallAlert || runtimeConfig.subscribeTemplateId
+    if (!templateId || typeof wx.requestSubscribeMessage !== 'function') return
 
     const shouldEnable = await new Promise<boolean>((resolve) => {
       wx.showModal({
-        title: '开启检测提醒',
-        content: '启动检测前建议开启微信提醒，检测到跌倒或设备采集异常时会通知你。',
+        title: '开启跌倒提醒',
+        content: '启动检测前建议开启微信提醒，检测到跌倒时会通知你。',
         confirmText: '开启',
         cancelText: '跳过',
         success: (result) => resolve(Boolean(result.confirm)),
@@ -203,49 +186,35 @@ Page({
     if (!shouldEnable) return
 
     try {
-      const statuses = await this.requestStartupSubscriptions(entries)
-      const accepted = Object.keys(statuses).some((key) => statuses[key] === 'accept')
+      const status = await this.requestFallAlertSubscription(templateId)
       wx.showToast({
-        title: accepted ? '提醒已开启' : '未开启提醒',
-        icon: accepted ? 'success' : 'none',
+        title: status === 'accept' ? '提醒已开启' : '未开启提醒',
+        icon: status === 'accept' ? 'success' : 'none',
       })
     } catch (error) {
-      console.error('启动前订阅提醒失败', error)
+      console.error('启动前订阅跌倒提醒失败', error)
       wx.showToast({ title: '提醒开启失败，将继续启动', icon: 'none' })
     }
   },
 
-  async requestStartupSubscriptions(
-    entries: Array<{ scene: WechatSubscriptionScene; templateId: string }>,
-  ): Promise<Record<string, WechatSubscriptionStatusValue>> {
-    const templateIds = Array.from(new Set(entries.map((item) => item.templateId)))
-    const statuses = await new Promise<Record<string, WechatSubscriptionStatusValue>>((resolve, reject) => {
+  async requestFallAlertSubscription(templateId: string): Promise<WechatSubscriptionStatusValue> {
+    const status = await new Promise<WechatSubscriptionStatusValue>((resolve, reject) => {
       wx.requestSubscribeMessage({
-        tmplIds: templateIds,
+        tmplIds: [templateId],
         success: (result) => {
-          const values: Record<string, WechatSubscriptionStatusValue> = {}
-          templateIds.forEach((templateId) => {
-            values[templateId] = String(
-              (result as Record<string, unknown>)[templateId] || 'reject',
-            ) as WechatSubscriptionStatusValue
-          })
-          resolve(values)
+          resolve(String(
+            (result as Record<string, unknown>)[templateId] || 'reject',
+          ) as WechatSubscriptionStatusValue)
         },
         fail: reject,
       })
     })
-    for (const entry of entries) {
-      try {
-        await registerWechatSubscription({
-          scene: entry.scene,
-          template_id: entry.templateId,
-          status: statuses[entry.templateId] || 'reject',
-        })
-      } catch (error) {
-        console.error('订阅状态保存失败', entry.scene, error)
-      }
-    }
-    return statuses
+    await registerWechatSubscription({
+      scene: 'fall_alert',
+      template_id: templateId,
+      status,
+    })
+    return status
   },
 
   async loadLatestAlert() {
@@ -283,38 +252,6 @@ Page({
       wx.showToast({ title: '已确认安全', icon: 'success' })
     } catch (error: any) {
       wx.showToast({ title: (error && error.message) || '提交失败', icon: 'none' })
-    }
-  },
-
-  async onResetFaultTap() {
-    const device = this.data.device
-    if (!device || this.data.resetLoading) return
-    if (!device.enabled) {
-      wx.showToast({ title: '设备已被管理员停用', icon: 'none' })
-      return
-    }
-    const confirmed = await new Promise<boolean>((resolve) => {
-      wx.showModal({
-        title: '恢复设备',
-        content: '请确认已检查 A 板供电、A/B 板连接和设备摆放。确认后将复位设备到待检测状态。',
-        confirmText: '我已检查',
-        cancelText: '取消',
-        success: (result) => resolve(Boolean(result.confirm)),
-        fail: () => resolve(false),
-      })
-    })
-    if (!confirmed) return
-
-    this.setData({ resetLoading: true })
-    try {
-      const result = await resetDeviceFault(device.device_name)
-      if (!result.accepted) throw new Error(result.message)
-      wx.showToast({ title: '复位命令已发送', icon: 'none' })
-      await this.loadDevice()
-    } catch (error: any) {
-      wx.showToast({ title: (error && error.message) || '复位失败', icon: 'none' })
-    } finally {
-      this.setData({ resetLoading: false })
     }
   },
 
@@ -368,7 +305,7 @@ Page({
       lightDesc = '等待设备重新上线'
     } else if (device.state === 'error' || device.fault.code) {
       lightState = 'error'
-      lightTitle = this.isCsiCollectionFault(device.fault.code) ? '设备采集异常' : '设备异常'
+      lightTitle = '设备异常'
       lightDesc = device.fault.message || device.fault_message || '请检查设备连接和供电状态'
     }
 
@@ -383,36 +320,9 @@ Page({
     }
   },
 
-  isCsiCollectionFault(code: string | null): boolean {
-    return Boolean(code && CSI_FAULT_CODES.indexOf(String(code).toUpperCase()) >= 0)
-  },
-
-  showDeviceFaultModal(event: RealtimeEvent) {
-    if (!(this as any)._active) return
-    const data = (event.data || {}) as any
-    if (!this.isCsiCollectionFault(data.code)) return
-    const faultKey = `${event.device_name || ''}:${String(data.code || '').toUpperCase()}`
-    if ((this as any)._shownFaultKey === faultKey) return
-    ;(this as any)._shownFaultKey = faultKey
-    const templateData = data.template_data || {}
-    const content = (templateData.thing5 && templateData.thing5.value)
-      || data.message
-      || '未接收到 CSI 数据，请检查设备电源、A/B 板连接和设备摆放后再恢复设备。'
-    wx.showModal({
-      title: '设备采集异常',
-      content,
-      confirmText: '去处理',
-      showCancel: false,
-    })
-  },
-
   onRealtimeEvent(event: RealtimeEvent) {
     if (event.device_name !== this.data.deviceName) return
     const eventData = event.data as any
-    if (event.event === 'device.fault') {
-      this.clearPendingControl()
-      this.showDeviceFaultModal(event)
-    }
     if (
       event.event === 'device.runtime.changed' &&
       eventData &&
@@ -421,15 +331,6 @@ Page({
     ) {
       this.clearPendingControl()
       wx.showToast({ title: eventData.message || '硬件拒绝了控制命令', icon: 'none' })
-    }
-    if (
-      event.event === 'device.runtime.changed' &&
-      eventData &&
-      eventData.action === 'reset' &&
-      eventData.fault_cleared
-    ) {
-      ;(this as any)._shownFaultKey = ''
-      wx.showToast({ title: eventData.message || '设备已恢复', icon: 'success' })
     }
     if (event.event === 'detection.fall-result' && event.data && (event.data as any).fall_detected) {
       const id = (event.data as any).fall_event_id
