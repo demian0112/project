@@ -1,6 +1,9 @@
 import { runtimeConfig } from '../../config/env'
 import { DeviceDetail, FallEvent, RealtimeEvent } from '../../models/domain'
-import type { WechatSubscriptionStatusValue } from '../../utils/api'
+import type {
+  WechatSubscriptionScene,
+  WechatSubscriptionStatusValue,
+} from '../../utils/api'
 import {
   controlDevice,
   getDeviceDetail,
@@ -14,6 +17,14 @@ import { realtimeClient } from '../../services/realtime'
 const CONTROL_TIMEOUT_MS = 15000
 const CONTROL_POLL_MS = 1500
 type LightState = 'normal' | 'fall' | 'error' | 'offline'
+type SubscribeTemplateTarget = {
+  scene: WechatSubscriptionScene
+  templateId: string
+}
+type SubscriptionSetting = {
+  mainSwitch?: boolean
+  itemSettings?: Record<string, string>
+}
 
 Page({
   data: {
@@ -145,7 +156,11 @@ Page({
     }
     const action = device.detection_state === 'running' ? 'stop' : 'start'
     if (action === 'start') {
-      await this.promptFallAlertSubscriptionBeforeStart()
+      try {
+        await this.requestDetectionSubscriptionsBeforeStart()
+      } catch (error) {
+        console.warn('[wechat-subscribe] ignored error before start:', error)
+      }
       if (this.data.controlLoading) return
     }
     const pendingState = action === 'start' ? 'starting' : 'stopping'
@@ -169,52 +184,156 @@ Page({
     }
   },
 
-  async promptFallAlertSubscriptionBeforeStart() {
-    const templateId = runtimeConfig.subscribeTemplateIds.fallAlert || runtimeConfig.subscribeTemplateId
-    if (!templateId || typeof wx.requestSubscribeMessage !== 'function') return
-
-    const shouldEnable = await new Promise<boolean>((resolve) => {
-      wx.showModal({
-        title: '开启跌倒提醒',
-        content: '启动检测前建议开启微信提醒，检测到跌倒时会通知你。',
-        confirmText: '开启',
-        cancelText: '跳过',
-        success: (result) => resolve(Boolean(result.confirm)),
-        fail: () => resolve(false),
-      })
-    })
-    if (!shouldEnable) return
+  async requestDetectionSubscriptionsBeforeStart() {
+    const templateTargets = this.getSubscribeTemplateTargets()
+    const tmplIds = templateTargets.map((target) => target.templateId)
+    console.log('[wechat-subscribe] request tmplIds:', tmplIds)
+    if (!tmplIds.length) {
+      console.warn('[wechat-subscribe] no template ids configured')
+      return
+    }
+    if (typeof wx.requestSubscribeMessage !== 'function') {
+      console.warn('[wechat-subscribe] requestSubscribeMessage is not supported')
+      return
+    }
 
     try {
-      const status = await this.requestFallAlertSubscription(templateId)
+      const settingResult = await this.getSubscriptionSetting()
+      const setting = (settingResult as any).subscriptionsSetting as SubscriptionSetting | undefined
+      console.log('[wechat-subscribe] setting:', setting)
+      await this.showSubscriptionSettingHint(setting, templateTargets)
+    } catch (error) {
+      console.warn('[wechat-subscribe] get setting failed:', error)
+    }
+
+    try {
+      const result = await this.requestSubscribeMessage(tmplIds)
+      console.log('[wechat-subscribe] result:', result)
+      await this.saveDetectionSubscribeResult(result, templateTargets)
+      const accepted = templateTargets.some((target) => this.readSubscribeStatus(result[target.templateId]) === 'accept')
       wx.showToast({
-        title: status === 'accept' ? '提醒已开启' : '未开启提醒',
-        icon: status === 'accept' ? 'success' : 'none',
+        title: accepted ? '提醒已开启' : '未开启提醒',
+        icon: accepted ? 'success' : 'none',
       })
     } catch (error) {
-      console.error('启动前订阅跌倒提醒失败', error)
+      console.warn('[wechat-subscribe] failed:', error)
       wx.showToast({ title: '提醒开启失败，将继续启动', icon: 'none' })
     }
   },
 
-  async requestFallAlertSubscription(templateId: string): Promise<WechatSubscriptionStatusValue> {
-    const status = await new Promise<WechatSubscriptionStatusValue>((resolve, reject) => {
+  getSubscribeTemplateTargets(): SubscribeTemplateTarget[] {
+    const subscribeTemplateIds = runtimeConfig.subscribeTemplateIds || {
+      fallAlert: '',
+      deviceFault: '',
+    }
+    const fallAlertTemplateId = subscribeTemplateIds.fallAlert || runtimeConfig.subscribeTemplateId
+    const deviceFaultTemplateId = subscribeTemplateIds.deviceFault
+    const targets: Array<{ scene: WechatSubscriptionScene; templateId?: string }> = [
+      { scene: 'fall_alert', templateId: fallAlertTemplateId },
+      { scene: 'device_fault', templateId: deviceFaultTemplateId },
+    ]
+    return targets.filter(
+      (target): target is SubscribeTemplateTarget => Boolean(target.templateId),
+    )
+  },
+
+  getSubscriptionSetting(): Promise<WechatMiniprogram.GetSettingSuccessCallbackResult> {
+    return new Promise((resolve, reject) => {
+      wx.getSetting({
+        withSubscriptions: true,
+        success: resolve,
+        fail: reject,
+      } as any)
+    })
+  },
+
+  async showSubscriptionSettingHint(
+    setting: SubscriptionSetting | undefined,
+    targets: SubscribeTemplateTarget[],
+  ) {
+    if (!setting) return
+    if (setting.mainSwitch === false) {
+      await this.showSubscribeHint('消息订阅总开关未开启，开启后才能收到跌倒提醒和设备异常提醒。')
+      return
+    }
+
+    const itemSettings = setting.itemSettings || {}
+    const rejectedScenes = targets
+      .filter((target) => itemSettings[target.templateId] === 'reject')
+      .map((target) => target.scene)
+    if (!rejectedScenes.length) return
+
+    const fallRejected = rejectedScenes.includes('fall_alert')
+    const deviceRejected = rejectedScenes.includes('device_fault')
+    const content = fallRejected && deviceRejected
+      ? '你已关闭人员跌倒提醒和设备状态提醒，可能无法收到跌倒和设备异常服务通知，可在小程序设置中重新开启。'
+      : deviceRejected
+      ? '你已关闭设备状态提醒，设备异常时可能无法收到服务通知，可在小程序设置中重新开启。'
+      : '你已关闭人员跌倒提醒，检测到跌倒时可能无法收到服务通知，可在小程序设置中重新开启。'
+    await this.showSubscribeHint(content)
+  },
+
+  showSubscribeHint(content: string): Promise<void> {
+    return new Promise((resolve) => {
+      wx.showModal({
+        title: '订阅提醒',
+        content,
+        showCancel: true,
+        confirmText: '知道了',
+        cancelText: '继续启动',
+        success: () => resolve(),
+        fail: () => resolve(),
+      })
+    })
+  },
+
+  requestSubscribeMessage(
+    tmplIds: string[],
+  ): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
       wx.requestSubscribeMessage({
-        tmplIds: [templateId],
-        success: (result) => {
-          resolve(String(
-            (result as Record<string, unknown>)[templateId] || 'reject',
-          ) as WechatSubscriptionStatusValue)
-        },
+        tmplIds,
+        success: (response) => resolve(response as Record<string, unknown>),
         fail: reject,
       })
     })
-    await registerWechatSubscription({
-      scene: 'fall_alert',
-      template_id: templateId,
-      status,
-    })
-    return status
+  },
+
+  async saveDetectionSubscribeResult(
+    result: Record<string, unknown>,
+    targets: SubscribeTemplateTarget[],
+  ) {
+    const tasks = targets.reduce((items, target) => {
+      const status = this.readSubscribeStatus(result[target.templateId])
+      if (!status) {
+        console.warn('[wechat-subscribe] unknown result skipped:', target.scene, result[target.templateId])
+        return items
+      }
+      items.push(registerWechatSubscription({
+        scene: target.scene,
+        template_id: target.templateId,
+        status,
+      }))
+      return items
+    }, [] as Array<Promise<unknown>>)
+    const settled: Array<{ status: 'fulfilled' | 'rejected'; value?: unknown; reason?: unknown }> = []
+    for (let index = 0; index < tasks.length; index += 1) {
+      try {
+        const value = await tasks[index]
+        settled.push({ status: 'fulfilled', value })
+      } catch (reason) {
+        settled.push({ status: 'rejected', reason })
+      }
+    }
+    console.log('[wechat-subscribe] saved results:', settled)
+  },
+
+  readSubscribeStatus(value: unknown): WechatSubscriptionStatusValue | '' {
+    const status = String(value || '')
+    if (status === 'accept' || status === 'reject' || status === 'ban' || status === 'filter') {
+      return status
+    }
+    return ''
   },
 
   async loadLatestAlert() {
