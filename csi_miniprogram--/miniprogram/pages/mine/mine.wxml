@@ -25,13 +25,13 @@
     </view>
   </view>
 
-  <view wx:if="{{showPhonePrompt}}" class="phone-card">
+  <!-- <view wx:if="{{showPhonePrompt}}" class="phone-card">
     <view class="phone-copy">
       <text class="phone-title">绑定手机号</text>
       <text class="phone-desc">首次登录建议授权手机号，便于后续管理员识别和服务联系。</text>
     </view>
     <button class="phone-action" open-type="getPhoneNumber" bindgetphonenumber="onGetPhoneNumber" loading="{{phoneLoading}}">授权手机号</button>
-  </view>
+  </view> -->
 
   <view class="section-title"><text>设备</text><text class="section-link">管理已绑定设备</text></view>
   <view class="feature-card">
