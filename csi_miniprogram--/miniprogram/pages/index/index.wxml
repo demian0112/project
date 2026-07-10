@@ -21,6 +21,16 @@
     <view class="chevron alert-chevron"></view>
   </view>
 
+  <view wx:if="{{primaryFaultDevice}}" class="fault-alert-card" bindtap="onFaultCardTap">
+    <view class="fault-alert-icon">!</view>
+    <view class="fault-alert-copy">
+      <text class="fault-alert-kicker">{{faultSummaryText}}</text>
+      <text class="fault-alert-title">{{primaryFaultDevice.display_name || primaryFaultDevice.device_name}}出现采集异常</text>
+      <text class="fault-alert-desc">{{primaryFaultMessage}}</text>
+    </view>
+    <button class="fault-alert-action" catchtap="onFaultCardTap">去处理</button>
+  </view>
+
   <view class="section-head"><text class="section-title">设备列表</text><text class="section-count">{{totalCount}} 台</text></view>
 
   <block wx:if="{{loading}}">

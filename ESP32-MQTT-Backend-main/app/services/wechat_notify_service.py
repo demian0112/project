@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from flask import current_app
@@ -512,14 +512,31 @@ def _post_subscribe_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _fall_alert_page(fall_event_id: int) -> str:
     base = str(current_app.config["WECHAT_FALL_ALERT_PAGE"] or "").strip()
-    separator = "&" if "?" in base else "?"
-    return f"{base}{separator}id={fall_event_id}"
+    return _append_page_query(base, {"id": str(fall_event_id)})
 
 
 def _device_fault_page(device: Device) -> str:
     base = str(current_app.config["WECHAT_DEVICE_FAULT_PAGE"] or "").strip()
-    separator = "&" if "?" in base else "?"
-    return f"{base}{separator}{urlencode({'deviceName': device.device_name})}"
+    if not base:
+        base = "pages/device-detail/index"
+    if not device.device_name:
+        return base
+    return _append_page_query(base, {"deviceName": device.device_name})
+
+
+def _append_page_query(base: str, params: dict[str, str]) -> str:
+    parts = urlsplit(base)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.update({key: value for key, value in params.items() if value})
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urlencode(query),
+            parts.fragment,
+        )
+    )
 
 
 def _fall_alert_template_data(

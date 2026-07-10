@@ -18,11 +18,18 @@ export interface DeviceSummary {
   display_name: string | null
   location: string | null
   state: DeviceState
+  runtime_state?: HardwareRuntimeState
   detection_state: DetectionState
   network_quality: NetworkQuality
   last_seen_at: string | null
+  fault_code?: string | null
   fault_message: string | null
   fault_template_data?: Record<string, { value: string }> | null
+  fault?: {
+    code: string | null
+    message: string | null
+    template_data?: Record<string, { value: string }> | null
+  } | null
 }
 
 export interface DeviceDetail extends DeviceSummary {

@@ -395,11 +395,16 @@ class Device(db.Model):
             "display_name": self.display_name,
             "location": self.location,
             "state": self.state,
+            "runtime_state": self.runtime_state,
             "detection_state": self.detection_state,
             "network_quality": self.network_quality,
             "last_seen_at": isoformat(self.last_seen_at),
+            "fault_code": self.fault_code,
             "fault_message": fault["message"],
             "fault_template_data": fault["template_data"],
+            "fault": {
+                **fault,
+            },
         }
 
     def to_detail_dict(self) -> dict:

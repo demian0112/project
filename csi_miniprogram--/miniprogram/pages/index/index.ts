@@ -21,6 +21,11 @@ Page({
     totalCount: 0,
     onlineCount: 0,
     runningCount: 0,
+    faultDevices: [] as DisplayDevice[],
+    primaryFaultDevice: null as DisplayDevice | null,
+    faultDeviceCount: 0,
+    faultSummaryText: '',
+    primaryFaultMessage: '',
     activeAlert: null as FallEvent | null,
     alertTimeText: '',
     _pollingTimer: null as any,
@@ -76,6 +81,8 @@ Page({
         qualityLabel: qualityText(device.network_quality),
         qualityClass: `quality-${device.network_quality}`,
       }))
+      const faultDevices = displayDevices.filter((device) => this.isDeviceFaulted(device))
+      const primaryFaultDevice = faultDevices[0] || null
       this.setData({
         loading: false,
         loadError: '',
@@ -83,6 +90,11 @@ Page({
         totalCount: devices.length,
         onlineCount: devices.filter((device) => device.state === 'online').length,
         runningCount: devices.filter((device) => device.detection_state === 'running').length,
+        faultDevices,
+        primaryFaultDevice,
+        faultDeviceCount: faultDevices.length,
+        faultSummaryText: faultDevices.length > 1 ? `${faultDevices.length} 台设备需要检查` : '设备异常',
+        primaryFaultMessage: primaryFaultDevice ? this.getDeviceFaultMessage(primaryFaultDevice) : '',
       })
       await this.loadLatestAlert()
     } catch (error: any) {
@@ -113,6 +125,12 @@ Page({
     wx.navigateTo({ url: `/pages/device-detail/index?deviceName=${encodeURIComponent(deviceName)}` })
   },
 
+  onFaultCardTap() {
+    const device = this.data.primaryFaultDevice
+    if (!device) return
+    wx.navigateTo({ url: `/pages/device-detail/index?deviceName=${encodeURIComponent(device.device_name)}` })
+  },
+
   onAlertTap() {
     const alert = this.data.activeAlert
     if (!alert) return
@@ -139,7 +157,7 @@ Page({
 
   handleRealtimeEvent(event: RealtimeEvent) {
     if (event.event === 'device.fault') {
-      this.showDeviceFaultModal(event)
+      this.showDeviceFaultToast(event)
     }
     if (event.event === 'detection.fall-result' && event.data && (event.data as any).fall_detected) {
       const id = (event.data as any).fall_event_id
@@ -150,7 +168,7 @@ Page({
     this.loadHome()
   },
 
-  showDeviceFaultModal(event: RealtimeEvent) {
+  showDeviceFaultToast(event: RealtimeEvent) {
     if (!(this as any)._active) return
     const data = (event.data || {}) as any
     const code = String(data.code || '').toUpperCase()
@@ -158,21 +176,29 @@ Page({
     const faultKey = `${event.device_name || ''}:${code}`
     if ((this as any)._shownFaultKey === faultKey) return
     ;(this as any)._shownFaultKey = faultKey
-    const templateData = data.template_data || {}
-    const content = (templateData.thing5 && templateData.thing5.value)
-      || data.message
-      || '未接收到 CSI 数据，请检查设备电源、A/B 板连接和设备摆放后恢复设备。'
-    wx.showModal({
-      title: '设备采集异常',
-      content,
-      confirmText: '去处理',
-      showCancel: false,
-      success: () => {
-        if (event.device_name) {
-          wx.navigateTo({ url: `/pages/device-detail/index?deviceName=${encodeURIComponent(event.device_name)}` })
-        }
-      },
+    wx.showToast({
+      title: '设备异常，请进入详情处理',
+      icon: 'none',
+      duration: 2500,
     })
+  },
+
+  isDeviceFaulted(device: DeviceSummary): boolean {
+    return (
+      device.state === 'error' ||
+      device.runtime_state === 'fault' ||
+      Boolean(device.fault_code) ||
+      Boolean(device.fault_message) ||
+      Boolean(device.fault && device.fault.code)
+    )
+  },
+
+  getDeviceFaultMessage(device: DeviceSummary): string {
+    return (
+      (device.fault && device.fault.message) ||
+      device.fault_message ||
+      '未收到CSI数据，请检查设备供电和硬件连接'
+    )
   },
 
   formatDate(value: string): string {

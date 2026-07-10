@@ -97,6 +97,45 @@ def test_control_publish_uses_qos_one_and_no_retain(monkeypatch):
     assert result.message_id == 42
 
 
+def test_reset_publish_uses_existing_control_topic_and_metadata(monkeypatch):
+    client = DeviceMqttClient("fall-detector-01")
+    published = {}
+
+    def fake_publish(topic, payload, qos, retain):
+        published.update(
+            topic=topic,
+            payload=json.loads(payload),
+            qos=qos,
+            retain=retain,
+        )
+        return SimpleNamespace(mid=43, rc=0)
+
+    monkeypatch.setattr(client.client, "publish", fake_publish)
+
+    result = client.publish_control(
+        "reset",
+        session="sess-reset-001",
+        command_id="cmd-reset-001",
+        reason="user_fault_confirm",
+        source="user",
+    )
+
+    assert published["topic"] == (
+        "csi/v1/devices/fall-detector-01/down/control"
+    )
+    assert published["qos"] == 1
+    assert published["retain"] is False
+    assert published["payload"] == {
+        "cmd": "control",
+        "action": "reset",
+        "session": "sess-reset-001",
+        "command_id": "cmd-reset-001",
+        "reason": "user_fault_confirm",
+        "source": "user",
+    }
+    assert result.message_id == 43
+
+
 def test_stop_requires_active_session():
     client = DeviceMqttClient("csi-gw-001")
 

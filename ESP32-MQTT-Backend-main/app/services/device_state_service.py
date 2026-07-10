@@ -429,6 +429,26 @@ class DeviceCoordinator:
             ):
                 device.state = "online"
         else:
+            if (
+                device.state == "error"
+                or device.runtime_state == "fault"
+                or device.fault_code
+            ):
+                device.last_seen_at = now
+                db.session.commit()
+                websocket_hub.push_to_user(
+                    device.owner_user_id,
+                    "device.state.changed",
+                    device.device_name,
+                    {
+                        "state": device.state,
+                        "runtime_state": device.runtime_state,
+                        "fault_code": device.fault_code,
+                        "last_seen_at": isoformat(device.last_seen_at),
+                    },
+                )
+                return
+
             hard_timeout = float(self.app.config["CSI_HARD_TIMEOUT_SECONDS"])
 
             if self._is_running_like(device, now):

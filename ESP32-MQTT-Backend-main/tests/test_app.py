@@ -529,6 +529,66 @@ def test_miniapp_records_wechat_subscription(client, app):
     assert status.get_json()["remaining_count"] == 0
 
 
+def test_device_fault_notice_links_to_fault_device_detail(app):
+    from urllib.parse import parse_qs, urlsplit
+
+    from app.services.wechat_notify_service import send_device_fault_notice
+
+    app.config["WECHAT_NOTIFY_ENABLED"] = True
+    app.config["WECHAT_DEVICE_FAULT_TEMPLATE_ID"] = "tpl-device-fault"
+    app.config["WECHAT_DEVICE_FAULT_PAGE"] = (
+        "pages/device-detail/index?source=wechat&deviceName=old-device"
+    )
+    sent_messages = []
+    app.config["WECHAT_SUBSCRIBE_SENDER"] = (
+        lambda **message: sent_messages.append(message)
+        or {"errcode": 0, "errmsg": "ok"}
+    )
+
+    with app.app_context():
+        user = User(wx_openid="wx-device-fault")
+        device = Device(
+            device_name="fault-notice-device",
+            display_name="Fault Notice Device",
+            owner=user,
+            location="Living Room",
+            state="error",
+            runtime_state="fault",
+            fault_code="NO_CSI_FRAME",
+            fault_message="no csi",
+        )
+        db.session.add_all([user, device])
+        db.session.flush()
+        db.session.add(
+            WxSubscription(
+                user_id=user.id,
+                scene="device_fault",
+                template_id="tpl-device-fault",
+                status="accept",
+                remaining_count=1,
+                last_subscribed_at=utc_now(),
+            )
+        )
+        db.session.commit()
+
+        result = send_device_fault_notice(
+            user,
+            device,
+            code="NO_CSI_FRAME",
+            message="no csi",
+        )
+
+    assert result["sent"] is True
+    assert len(sent_messages) == 1
+    page = sent_messages[0]["page"]
+    parsed = urlsplit(page)
+    query = parse_qs(parsed.query)
+    assert parsed.path == "pages/device-detail/index"
+    assert query["source"] == ["wechat"]
+    assert query["deviceName"] == ["fault-notice-device"]
+    assert page.count("deviceName=") == 1
+
+
 def test_miniapp_silent_login_does_not_create_new_user(client, app):
     app.config["WECHAT_CODE_EXCHANGE"] = lambda code: {
         "openid": "wx-silent-new",
@@ -844,6 +904,199 @@ def test_miniapp_device_ownership_and_control(client, app):
         assert device.current_session is None
 
 
+def test_miniapp_reset_fault_allows_error_device_and_ack_ok_clears(client, app):
+    login_data = login_miniapp(client, app, openid="wx-reset-ok")
+    token = login_data["access_token"]
+    user_id = login_data["user"]["id"]
+    published = []
+    app.config["MQTT_CONTROL_PUBLISHER"] = (
+        lambda **message: published.append(message)
+    )
+
+    with app.app_context():
+        device = Device(
+            device_name="reset-ok-device",
+            display_name="Reset OK Device",
+            owner_user_id=user_id,
+            state="error",
+            runtime_state="fault",
+            detection_state="idle",
+            current_session="sess-reset-ok",
+            network_quality="poor",
+            fault_code="NO_CSI_FRAME_TIMEOUT",
+            fault_message="no csi frame",
+        )
+        db.session.add(device)
+        db.session.commit()
+
+    response = client.post(
+        "/api/v1/devices/reset-ok-device/reset-fault",
+        headers={
+            **bearer(token),
+            "Idempotency-Key": "reset-ok-001",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.get_json()["action"] == "reset"
+    assert published == [
+        {
+            "device_name": "reset-ok-device",
+            "action": "reset",
+            "session": "sess-reset-ok",
+            "command_id": "reset-ok-001",
+            "reason": "user_fault_confirm",
+            "source": "user",
+        }
+    ]
+
+    with app.app_context():
+        coordinator = app.extensions["device_coordinator"]
+        coordinator.handle_mqtt_payload(
+            "reset-ok-device",
+            "ack",
+            {
+                "cmd": "control",
+                "action": "reset",
+                "ok": True,
+                "state": "idle",
+                "session": "sess-reset-ok",
+                "err": 0,
+                "msg": "",
+            },
+        )
+        device = db.session.scalar(
+            db.select(Device).where(
+                Device.device_name == "reset-ok-device"
+            )
+        )
+        assert device.state == "online"
+        assert device.runtime_state == "idle"
+        assert device.detection_state == "idle"
+        assert device.current_session is None
+        assert device.network_quality == "unknown"
+        assert device.fault_code is None
+        assert device.fault_message is None
+
+
+def test_reset_ack_false_preserves_fault_and_blocks_plain_idle_clear(client, app):
+    login_data = login_miniapp(client, app, openid="wx-reset-fail")
+    token = login_data["access_token"]
+    user_id = login_data["user"]["id"]
+    published = []
+    app.config["MQTT_CONTROL_PUBLISHER"] = (
+        lambda **message: published.append(message)
+    )
+
+    with app.app_context():
+        device = Device(
+            device_name="reset-fail-device",
+            owner_user_id=user_id,
+            state="error",
+            runtime_state="fault",
+            detection_state="idle",
+            current_session="sess-reset-fail",
+            fault_code="UART_TIMEOUT",
+            fault_message="uart timeout",
+        )
+        db.session.add(device)
+        db.session.commit()
+
+    response = client.post(
+        "/api/v1/devices/reset-fail-device/reset-fault",
+        headers={
+            **bearer(token),
+            "Idempotency-Key": "reset-fail-001",
+        },
+    )
+    assert response.status_code == 202
+    assert published[-1]["action"] == "reset"
+
+    with app.app_context():
+        coordinator = app.extensions["device_coordinator"]
+        coordinator.handle_mqtt_payload(
+            "reset-fail-device",
+            "ack",
+            {
+                "cmd": "control",
+                "action": "reset",
+                "ok": False,
+                "state": "fault",
+                "session": "sess-reset-fail",
+                "err": 1,
+                "msg": "reset failed",
+            },
+        )
+        coordinator.handle_mqtt_payload(
+            "reset-fail-device",
+            "status",
+            {
+                "state": "idle",
+                "session": "sess-reset-fail",
+            },
+        )
+        device = db.session.scalar(
+            db.select(Device).where(
+                Device.device_name == "reset-fail-device"
+            )
+        )
+        assert device.state == "error"
+        assert device.runtime_state == "fault"
+        assert device.fault_code == "UART_TIMEOUT"
+        assert device.fault_message == "uart timeout"
+
+
+def test_pending_reset_idle_status_clears_fault(client, app):
+    login_data = login_miniapp(client, app, openid="wx-reset-idle")
+    token = login_data["access_token"]
+    user_id = login_data["user"]["id"]
+    app.config["MQTT_CONTROL_PUBLISHER"] = lambda **message: None
+
+    with app.app_context():
+        device = Device(
+            device_name="reset-idle-device",
+            owner_user_id=user_id,
+            state="error",
+            runtime_state="fault",
+            detection_state="idle",
+            current_session="sess-reset-idle",
+            fault_code="NO_CSI_FRAME",
+            fault_message="no csi",
+        )
+        db.session.add(device)
+        db.session.commit()
+
+    response = client.post(
+        "/api/v1/devices/reset-idle-device/reset-fault",
+        headers={
+            **bearer(token),
+            "Idempotency-Key": "reset-idle-001",
+        },
+    )
+    assert response.status_code == 202
+
+    with app.app_context():
+        coordinator = app.extensions["device_coordinator"]
+        coordinator.handle_mqtt_payload(
+            "reset-idle-device",
+            "status",
+            {
+                "state": "idle",
+                "session": "sess-reset-idle",
+            },
+        )
+        device = db.session.scalar(
+            db.select(Device).where(
+                Device.device_name == "reset-idle-device"
+            )
+        )
+        assert device.state == "online"
+        assert device.runtime_state == "idle"
+        assert device.detection_state == "idle"
+        assert device.fault_code is None
+        assert device.fault_message is None
+
+
 def test_start_can_be_confirmed_by_first_csi_without_fresh_status(client, app):
     login_data = login_miniapp(client, app, openid="wx-c-board-start")
     token = login_data["access_token"]
@@ -896,7 +1149,12 @@ def test_start_can_be_confirmed_by_first_csi_without_fresh_status(client, app):
         assert device.last_csi_at is not None
 
 
-def test_running_csi_gap_degrades_quality_before_hard_offline(app):
+def test_running_csi_gap_degrades_quality_before_hard_fault(app):
+    published = []
+    app.config["MQTT_CONTROL_PUBLISHER"] = (
+        lambda **message: published.append(message)
+    )
+
     with app.app_context():
         user = User(wx_openid="wx-csi-gap")
         device = Device(
@@ -928,10 +1186,13 @@ def test_running_csi_gap_degrades_quality_before_hard_offline(app):
         db.session.commit()
         count = app.extensions["device_coordinator"].scan_offline_devices()
         db.session.refresh(device)
-        assert count == 1
-        assert device.state == "offline"
-        assert device.detection_state == "idle"
-        assert device.current_session is None
+        assert count == 0
+        assert device.state == "error"
+        assert device.runtime_state == "fault"
+        assert device.detection_state == "stopping"
+        assert device.current_session == "sess-gap"
+        assert device.fault_code == "NO_CSI_FRAME_TIMEOUT"
+        assert published[-1]["action"] == "stop"
 
 
 def test_offline_scan_rolls_back_on_failure(monkeypatch, app):
@@ -1199,7 +1460,7 @@ def test_hardware_status_fault_auto_stop_and_offline_contract(app):
         )
         db.session.refresh(device)
         assert device.state == "error"
-        assert device.runtime_state == "idle"
+        assert device.runtime_state == "fault"
         assert device.detection_state == "idle"
         assert device.current_session is None
 
@@ -1209,7 +1470,9 @@ def test_hardware_status_fault_auto_stop_and_offline_contract(app):
             {"status": "offline", "reason": "lwt"},
         )
         db.session.refresh(device)
-        assert device.state == "offline"
+        assert device.state == "error"
+        assert device.runtime_state == "fault"
+        assert device.fault_code == "UART_TIMEOUT"
 
 
 def test_mqtt_state_csi_fall_event_and_offline_scan(client, app):
@@ -1219,6 +1482,10 @@ def test_mqtt_state_csi_fall_event_and_offline_scan(client, app):
     app.config["CSI_WINDOW_SIZE"] = 2
     app.config["FALL_PREDICTOR"] = (
         lambda device_name, session, window: 1
+    )
+    published = []
+    app.config["MQTT_CONTROL_PUBLISHER"] = (
+        lambda **message: published.append(message)
     )
 
     with app.app_context():
@@ -1249,10 +1516,27 @@ def test_mqtt_state_csi_fall_event_and_offline_scan(client, app):
         db.session.refresh(device)
         assert device.state == "error"
 
+        reset = client.post(
+            "/api/v1/devices/fall-room-01/reset-fault",
+            headers={
+                **bearer(token),
+                "Idempotency-Key": "reset-fall-room-01",
+            },
+        )
+        assert reset.status_code == 202
+        assert published[-1]["action"] == "reset"
+
         coordinator.handle_mqtt_payload(
             "fall-room-01",
-            "online",
-            {"status": "online"},
+            "ack",
+            {
+                "cmd": "control",
+                "action": "reset",
+                "ok": True,
+                "state": "idle",
+                "err": 0,
+                "msg": "",
+            },
         )
         db.session.refresh(device)
         assert device.state == "online"
