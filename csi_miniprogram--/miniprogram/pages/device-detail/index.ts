@@ -22,10 +22,6 @@ type SubscribeTemplateTarget = {
   scene: WechatSubscriptionScene
   templateId: string
 }
-type SubscriptionSetting = {
-  mainSwitch?: boolean
-  itemSettings?: Record<string, string>
-}
 
 Page({
   data: {
@@ -35,6 +31,7 @@ Page({
     loading: true,
     loadError: '',
     controlLoading: false,
+    subscriptionLoading: false,
     resetting: false,
     pendingAction: '' as '' | 'start' | 'stop' | 'reset',
     pendingDeadline: 0,
@@ -174,11 +171,20 @@ Page({
     }
   },
 
-  async onControlTap() {
+  onControlTap() {
     const device = this.data.device
-    if (!device || this.data.controlLoading || this.data.resetting) return
+    if (
+      !device ||
+      this.data.controlLoading ||
+      this.data.subscriptionLoading ||
+      this.data.resetting
+    ) return
+
     if (device.state !== 'online') {
-      wx.showToast({ title: device.state === 'error' ? '设备异常，无法操作' : '设备离线，无法操作', icon: 'none' })
+      wx.showToast({
+        title: device.state === 'error' ? '设备异常，无法操作' : '设备离线，无法操作',
+        icon: 'none',
+      })
       return
     }
     if (!device.enabled) {
@@ -186,20 +192,121 @@ Page({
       return
     }
     if (this.hasActiveFault(device)) {
-      wx.showToast({ title: this.getFaultReason(device) || '设备存在故障，无法操作', icon: 'none' })
+      wx.showToast({
+        title: this.getFaultReason(device) || '设备存在故障，无法操作',
+        icon: 'none',
+      })
       return
     }
+
     const action = device.detection_state === 'running' ? 'stop' : 'start'
+
     if (action === 'start') {
-      try {
-        await this.requestDetectionSubscriptionsBeforeStart()
-      } catch (error) {
-        console.warn('[wechat-subscribe] ignored error before start:', error)
-      }
-      if (this.data.controlLoading) return
+      // 这里必须直接处于 WXML bindtap 的同步调用链中。
+      // 调用 wx.requestSubscribeMessage 之前不能 await wx.getSetting、网络请求或定时器。
+      this.requestSubscriptionsAndStart(device)
+      return
     }
+
+    void this.executeDeviceControl(device, 'stop')
+  },
+
+  requestSubscriptionsAndStart(device: DeviceDetail) {
+    const templateTargets = this.getSubscribeTemplateTargets()
+    const tmplIds = templateTargets
+      .map((target) => target.templateId)
+      .filter((templateId, index, items) => (
+        Boolean(templateId) && items.indexOf(templateId) === index
+      ))
+
+    const { fallAlert, deviceFault } = runtimeConfig.subscribeTemplateIds
+    this.logSubscriptionConfig(fallAlert, deviceFault, tmplIds)
+
+    if (!tmplIds.length) {
+      console.warn('[wechat-subscribe] no template ids configured; continue start')
+      void this.executeDeviceControl(device, 'start')
+      return
+    }
+
+    if (typeof wx.requestSubscribeMessage !== 'function') {
+      console.warn('[wechat-subscribe] requestSubscribeMessage is not supported; continue start')
+      void this.executeDeviceControl(device, 'start')
+      return
+    }
+
+    this.setData({ subscriptionLoading: true })
+    console.info('[wechat-subscribe] invoke directly from user tap', {
+      templateCount: tmplIds.length,
+      fallAlertConfigured: Boolean(fallAlert),
+      deviceFaultConfigured: Boolean(deviceFault),
+    })
+
+    // 不要把这里重新包装成“先 await getSetting，再调用订阅接口”。
+    wx.requestSubscribeMessage({
+      tmplIds,
+      success: (response) => {
+        const result = response as unknown as Record<string, unknown>
+        this.setData({ subscriptionLoading: false })
+
+        if (runtimeConfig.environment === 'development') {
+          console.info(
+            '[wechat-subscribe] result statuses:',
+            this.summarizeSubscribeResult(result, templateTargets),
+          )
+        }
+
+        // 保存授权结果不阻塞设备启动；两个模板分别落库。
+        void this.saveDetectionSubscribeResult(result, templateTargets).catch((error) => {
+          console.warn('[wechat-subscribe] save result failed:', error)
+        })
+
+        const accepted = templateTargets.some((target) => (
+          this.normalizeSubscribeStatus(result[target.templateId]) === 'accept'
+        ))
+        wx.showToast({
+          title: accepted ? '提醒授权已记录' : '未开启提醒，将继续启动',
+          icon: accepted ? 'success' : 'none',
+          duration: 2200,
+        })
+
+        void this.executeDeviceControl(device, 'start')
+      },
+      fail: (error) => {
+        this.setData({ subscriptionLoading: false })
+        const subscribeError = error as WechatMiniprogram.GeneralCallbackResult & {
+          errCode?: number
+        }
+        console.error('[wechat-subscribe] request failed:', {
+          errCode: subscribeError.errCode,
+          errMsg: subscribeError.errMsg,
+          detail: error,
+        })
+
+        wx.showToast({
+          title: subscribeError.errCode === 20004
+            ? '订阅消息已关闭，将继续启动'
+            : '提醒授权未完成，将继续启动',
+          icon: 'none',
+          duration: 2600,
+        })
+
+        // 订阅授权失败不影响 CSI 检测功能。
+        void this.executeDeviceControl(device, 'start')
+      },
+    })
+  },
+
+  async executeDeviceControl(
+    device: DeviceDetail,
+    action: 'start' | 'stop',
+  ) {
+    if (this.data.controlLoading || this.data.resetting) return
+
     const pendingState = action === 'start' ? 'starting' : 'stopping'
-    const pendingDevice: DeviceDetail = { ...device, detection_state: pendingState }
+    const pendingDevice: DeviceDetail = {
+      ...device,
+      detection_state: pendingState,
+    }
     this.setData({
       controlLoading: true,
       pendingAction: action,
@@ -207,6 +314,7 @@ Page({
       device: pendingDevice,
       ...this.getDeviceViewState(pendingDevice, this.data.activeAlert),
     })
+
     try {
       const result = await controlDevice(device.device_name, action)
       if (!result.accepted) throw new Error(result.message)
@@ -214,54 +322,11 @@ Page({
       this.scheduleControlCheck()
     } catch (error: any) {
       this.clearPendingControl()
-      wx.showToast({ title: (error && error.message) || '控制失败', icon: 'none' })
-      await this.loadDevice()
-    }
-  },
-
-  async requestDetectionSubscriptionsBeforeStart() {
-    const templateTargets = this.getSubscribeTemplateTargets()
-    const tmplIds = templateTargets.map((target) => target.templateId)
-    const { fallAlert, deviceFault } = runtimeConfig.subscribeTemplateIds
-    this.logSubscriptionConfig(fallAlert, deviceFault, tmplIds)
-    if (!tmplIds.length) {
-      console.warn('[wechat-subscribe] no template ids configured')
-      return
-    }
-    if (typeof wx.requestSubscribeMessage !== 'function') {
-      console.warn('[wechat-subscribe] requestSubscribeMessage is not supported')
-      return
-    }
-
-    try {
-      const settingResult = await this.getSubscriptionSetting()
-      const setting = (settingResult as any).subscriptionsSetting as SubscriptionSetting | undefined
-      if (setting && setting.mainSwitch === false) {
-        wx.showToast({
-          title: '订阅消息总开关未开启，本次仍可启动检测',
-          icon: 'none',
-          duration: 2500,
-        })
-        return
-      }
-    } catch (error) {
-      console.warn('[wechat-subscribe] get setting failed:', error)
-    }
-
-    try {
-      const result = await this.requestSubscribeMessage(tmplIds)
-      if (runtimeConfig.environment === 'development') {
-        console.info('[wechat-subscribe] result statuses:', this.summarizeSubscribeResult(result, templateTargets))
-      }
-      await this.saveDetectionSubscribeResult(result, templateTargets)
-      const accepted = templateTargets.some((target) => this.normalizeSubscribeStatus(result[target.templateId]) === 'accept')
       wx.showToast({
-        title: accepted ? '提醒已开启' : '未开启提醒',
-        icon: accepted ? 'success' : 'none',
+        title: (error && error.message) || '控制失败',
+        icon: 'none',
       })
-    } catch (error) {
-      console.warn('[wechat-subscribe] failed:', error)
-      wx.showToast({ title: '提醒开启失败，将继续启动', icon: 'none' })
+      await this.loadDevice()
     }
   },
 
@@ -274,28 +339,6 @@ Page({
     return targets.filter(
       (target): target is SubscribeTemplateTarget => Boolean(target.templateId),
     )
-  },
-
-  getSubscriptionSetting(): Promise<WechatMiniprogram.GetSettingSuccessCallbackResult> {
-    return new Promise((resolve, reject) => {
-      wx.getSetting({
-        withSubscriptions: true,
-        success: resolve,
-        fail: reject,
-      } as any)
-    })
-  },
-
-  requestSubscribeMessage(
-    tmplIds: string[],
-  ): Promise<Record<string, unknown>> {
-    return new Promise((resolve, reject) => {
-      wx.requestSubscribeMessage({
-        tmplIds,
-        success: (response) => resolve(response as Record<string, unknown>),
-        fail: reject,
-      })
-    })
   },
 
   async saveDetectionSubscribeResult(
@@ -475,6 +518,7 @@ Page({
     this.stopControlTimer()
     this.setData({
       controlLoading: false,
+      subscriptionLoading: false,
       resetting: false,
       pendingAction: '',
       pendingDeadline: 0,
