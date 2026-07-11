@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -162,7 +163,6 @@ class User(db.Model):
         onupdate=utc_now,
         nullable=False,
     )
-
     devices: Mapped[list[Device]] = relationship(
         back_populates="owner",
         cascade="all, delete-orphan",
@@ -292,6 +292,46 @@ class Device(db.Model):
         onupdate=utc_now,
         nullable=False,
     )
+    step_size: Mapped[int] = mapped_column(
+        Integer,
+        default=30,
+        nullable=False,
+    )
+    buffer_size: Mapped[int] = mapped_column(
+        Integer,
+        default=500,
+        nullable=False,
+    )
+    fall_confidence_threshold: Mapped[float] = mapped_column(
+        Float,
+        default=0.8,
+        nullable=False,
+    )
+    enable_sobel: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+    consecutive_required: Mapped[int] = mapped_column(
+        Integer,
+        default=2,
+        nullable=False,
+    )
+    confirmation_window: Mapped[float] = mapped_column(
+        Float,
+        default=4.0,
+        nullable=False,
+    )
+    cooldown_seconds: Mapped[float] = mapped_column(
+        Float,
+        default=10.0,
+        nullable=False,
+    )
+    max_time_interval: Mapped[float] = mapped_column(
+        Float,
+        default=1.5,
+        nullable=False,
+    )
 
     owner: Mapped[User] = relationship(back_populates="devices")
     fall_events: Mapped[list[FallEvent]] = relationship(
@@ -380,6 +420,7 @@ class Device(db.Model):
             "last_csi_at": isoformat(self.last_csi_at),
             "created_at": isoformat(self.created_at),
             "updated_at": isoformat(self.updated_at),
+            "algorithm_config": self.algorithm_config_dict(),
         }
 
     def to_summary_dict(self) -> dict:
@@ -405,6 +446,18 @@ class Device(db.Model):
             "fault": {
                 **fault,
             },
+        }
+
+    def algorithm_config_dict(self) -> dict:
+        return {
+            "step_size": self.step_size,
+            "buffer_size": self.buffer_size,
+            "fall_confidence_threshold": self.fall_confidence_threshold,
+            "enable_sobel": self.enable_sobel,
+            "consecutive_required": self.consecutive_required,
+            "confirmation_window": self.confirmation_window,
+            "cooldown_seconds": self.cooldown_seconds,
+            "max_time_interval": self.max_time_interval,
         }
 
     def to_detail_dict(self) -> dict:
@@ -503,6 +556,36 @@ class FallEvent(db.Model):
         String(255),
         nullable=True,
     )
+    alert_count: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        nullable=False,
+    )
+    last_detected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    max_confidence: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    algorithm_source: Mapped[str] = mapped_column(
+        String(40),
+        default="docker",
+        nullable=False,
+    )
+    algorithm_class: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    algorithm_confidence: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+    algorithm_timestamp: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     handled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -537,6 +620,9 @@ class FallEvent(db.Model):
             "occurred_at": isoformat(self.occurred_at),
             "network_quality": self.network_quality,
             "status": self.status,
+            "alert_count": self.alert_count,
+            "last_detected_at": isoformat(self.last_detected_at),
+            "max_confidence": self.max_confidence,
             "handled_at": isoformat(self.handled_at),
             "remark": self.remark,
         }
@@ -560,6 +646,10 @@ class FallEvent(db.Model):
                 "wechat_notified_at": isoformat(self.wechat_notified_at),
                 "wechat_notify_errcode": self.wechat_notify_errcode,
                 "wechat_notify_errmsg": self.wechat_notify_errmsg,
+                "algorithm_source": self.algorithm_source,
+                "algorithm_class": self.algorithm_class,
+                "algorithm_confidence": self.algorithm_confidence,
+                "algorithm_timestamp": isoformat(self.algorithm_timestamp),
                 "created_at": isoformat(self.created_at),
                 "updated_at": isoformat(self.updated_at),
             }

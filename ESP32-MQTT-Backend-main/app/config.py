@@ -12,6 +12,33 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def env_str(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip()
+
+
 def configure_app(app: Flask) -> None:
     """Load administrator, mini-program, database and runtime settings."""
     load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
@@ -112,5 +139,93 @@ def configure_app(app: Flask) -> None:
         CSI_WINDOW_SIZE=int(os.getenv("CSI_WINDOW_SIZE", "5")),
         FAULT_EVENT_LIMIT_SECONDS=int(
             os.getenv("FAULT_EVENT_LIMIT_SECONDS", "5")
+        ),
+        FALL_ALGORITHM_ENABLED=env_bool("FALL_ALGORITHM_ENABLED", True),
+        FALL_ALGORITHM_HTTP_BASE_URL=env_str(
+            "FALL_ALGORITHM_HTTP_BASE_URL",
+            "http://127.0.0.1:18080",
+        ).rstrip("/"),
+        FALL_ALGORITHM_WS_URL=env_str(
+            "FALL_ALGORITHM_WS_URL",
+            "ws://127.0.0.1:18080/stream",
+        ),
+        FALL_ALGORITHM_HEALTH_PATH=env_str(
+            "FALL_ALGORITHM_HEALTH_PATH",
+            "/health",
+        ),
+        FALL_ALGORITHM_STATS_PATH=env_str(
+            "FALL_ALGORITHM_STATS_PATH",
+            "/stats",
+        ),
+        FALL_ALGORITHM_CONFIG_PATH=env_str(
+            "FALL_ALGORITHM_CONFIG_PATH",
+            "/config",
+        ),
+        FALL_ALGORITHM_RESET_PATH=env_str(
+            "FALL_ALGORITHM_RESET_PATH",
+            "/reset",
+        ),
+        FALL_ALGORITHM_HTTP_TIMEOUT_SECONDS=env_float(
+            "FALL_ALGORITHM_HTTP_TIMEOUT_SECONDS",
+            3.0,
+        ),
+        FALL_ALGORITHM_WS_CONNECT_TIMEOUT_SECONDS=env_float(
+            "FALL_ALGORITHM_WS_CONNECT_TIMEOUT_SECONDS",
+            5.0,
+        ),
+        FALL_ALGORITHM_WS_READ_TIMEOUT_SECONDS=env_float(
+            "FALL_ALGORITHM_WS_READ_TIMEOUT_SECONDS",
+            35.0,
+        ),
+        FALL_ALGORITHM_PING_INTERVAL_SECONDS=env_float(
+            "FALL_ALGORITHM_PING_INTERVAL_SECONDS",
+            30.0,
+        ),
+        FALL_ALGORITHM_RECONNECT_INITIAL_SECONDS=env_float(
+            "FALL_ALGORITHM_RECONNECT_INITIAL_SECONDS",
+            1.0,
+        ),
+        FALL_ALGORITHM_RECONNECT_MAX_SECONDS=env_float(
+            "FALL_ALGORITHM_RECONNECT_MAX_SECONDS",
+            30.0,
+        ),
+        FALL_ALGORITHM_BATCH_INTERVAL_SECONDS=env_float(
+            "FALL_ALGORITHM_BATCH_INTERVAL_SECONDS",
+            1.5,
+        ),
+        FALL_ALGORITHM_QUEUE_MAX_FRAMES=env_int(
+            "FALL_ALGORITHM_QUEUE_MAX_FRAMES",
+            2000,
+        ),
+        FALL_ALGORITHM_SINGLE_ACTIVE_STREAM=env_bool(
+            "FALL_ALGORITHM_SINGLE_ACTIVE_STREAM",
+            True,
+        ),
+        FALL_ALGORITHM_CSI_TYPE=env_str(
+            "FALL_ALGORITHM_CSI_TYPE",
+            "CSI_DATA",
+        ),
+        FALL_ALGORITHM_RATE_SIG_MODE=env_int(
+            "FALL_ALGORITHM_RATE_SIG_MODE",
+            11,
+        ),
+        FALL_ALGORITHM_CHANNEL=env_int("FALL_ALGORITHM_CHANNEL", 100),
+        FALL_ALGORITHM_FFT_GAIN=env_int(
+            "FALL_ALGORITHM_FFT_GAIN",
+            0,
+        ),
+        FALL_ALGORITHM_AGC_GAIN=env_int("FALL_ALGORITHM_AGC_GAIN", 0),
+        FALL_ALGORITHM_RX_STATE=env_int("FALL_ALGORITHM_RX_STATE", 0),
+        FALL_ALGORITHM_SECONDARY_CHANNEL=env_int(
+            "FALL_ALGORITHM_SECONDARY_CHANNEL",
+            0,
+        ),
+        FALL_ALGORITHM_NOISE_FLOOR=env_int(
+            "FALL_ALGORITHM_NOISE_FLOOR",
+            0,
+        ),
+        FALL_ALGORITHM_PAYLOAD_TYPE=env_int(
+            "FALL_ALGORITHM_PAYLOAD_TYPE",
+            13,
         ),
     )

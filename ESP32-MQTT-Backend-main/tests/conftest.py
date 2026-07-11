@@ -11,6 +11,8 @@ def app(tmp_path):
         {
             "TESTING": True,
             "SQLALCHEMY_DATABASE_URI": f"sqlite:///{database_path}",
+            "FALL_ALGORITHM_ENABLED": False,
+            "MQTT_AUTOSTART_DEVICES": False,
         }
     )
 

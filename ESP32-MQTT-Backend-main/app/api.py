@@ -15,6 +15,11 @@ from .services.csi_live_buffer_service import (
     clamp_snapshot_frames,
     csi_live_buffer_service,
 )
+from .services.fall_algorithm_config import (
+    AlgorithmConfigError,
+    apply_algorithm_config,
+    validate_algorithm_config,
+)
 from .services.wechat_notify_service import send_fall_alert
 from .services.websocket_service import websocket_hub
 
@@ -181,6 +186,17 @@ def validate_device_data(
     }, None
 
 
+def validate_device_algorithm_data(
+    data: dict[str, Any],
+    *,
+    current: Device,
+) -> tuple[dict[str, Any] | None, tuple[Any, int] | None]:
+    try:
+        return validate_algorithm_config(data, current=current), None
+    except AlgorithmConfigError as exc:
+        return None, error_response(str(exc), 400)
+
+
 @api_bp.get("/devices")
 def list_devices():
     statement = (
@@ -198,8 +214,18 @@ def create_device():
     values, validation_error = validate_device_data(data)
     if validation_error:
         return validation_error
+    algorithm_values = None
+    if "algorithm_config" in data:
+        try:
+            algorithm_values = validate_algorithm_config(
+                dict(data.get("algorithm_config") or {})
+            )
+        except AlgorithmConfigError as exc:
+            return error_response(str(exc), 400)
 
     device = Device(**values)
+    if algorithm_values is not None:
+        apply_algorithm_config(device, algorithm_values)
     db.session.add(device)
     conflict = commit_or_conflict("device_uid already exists")
     if conflict:
@@ -221,6 +247,9 @@ def device_detail(device_id: int):
         return jsonify(device.to_dict())
     if request.method == "DELETE":
         device_name = device.device_name
+        current_app.extensions[
+            "device_coordinator"
+        ].algorithm_stream.stop_stream(device_name, None)
         db.session.delete(device)
         db.session.commit()
         current_app.extensions["device_coordinator"].mqtt.remove_device(
@@ -232,13 +261,28 @@ def device_detail(device_id: int):
     values, validation_error = validate_device_data(data, current=device)
     if validation_error:
         return validation_error
+    algorithm_values = None
+    if "algorithm_config" in data:
+        algorithm_values, algorithm_error = validate_device_algorithm_data(
+            dict(data.get("algorithm_config") or {}),
+            current=device,
+        )
+        if algorithm_error:
+            return algorithm_error
 
     for key, value in values.items():
         setattr(device, key, value)
+    if algorithm_values is not None:
+        apply_algorithm_config(device, algorithm_values)
 
     conflict = commit_or_conflict("device_uid already exists")
     if conflict:
         return conflict
+    runtime_sync = {"ok": True, "active": False}
+    if algorithm_values is not None and device.current_session:
+        runtime_sync = current_app.extensions[
+            "device_coordinator"
+        ].algorithm_stream.sync_running_config(device)
     if device.enabled and current_app.config["MQTT_AUTOSTART_DEVICES"]:
         current_app.extensions["device_coordinator"].mqtt.ensure_device(
             device.device_name
@@ -247,7 +291,34 @@ def device_detail(device_id: int):
         current_app.extensions["device_coordinator"].mqtt.remove_device(
             device.device_name
         )
-    return jsonify(device.to_dict())
+    payload = device.to_dict()
+    payload["runtime_sync"] = runtime_sync
+    status_code = 200 if runtime_sync.get("ok") else 202
+    return jsonify(payload), status_code
+
+
+@api_bp.put("/devices/<int:device_id>/fall-algorithm-config")
+def update_device_algorithm_config(device_id: int):
+    device = db.session.get(Device, device_id)
+    if device is None:
+        return error_response("device not found", 404)
+    data = request.get_json(silent=True) or {}
+    values, validation_error = validate_device_algorithm_data(
+        data,
+        current=device,
+    )
+    if validation_error:
+        return validation_error
+
+    apply_algorithm_config(device, values)
+    db.session.commit()
+    runtime_sync = current_app.extensions[
+        "device_coordinator"
+    ].algorithm_stream.sync_running_config(device)
+    payload = device.to_dict()
+    payload["runtime_sync"] = runtime_sync
+    status_code = 200 if runtime_sync.get("ok") else 202
+    return jsonify(payload), status_code
 
 
 @api_bp.get("/devices/<string:device_name>/csi-heatmap")
@@ -332,6 +403,9 @@ def simulate_device_fall(device_id: int):
         status="pending",
         notified=True,
         notified_at=now,
+        alert_count=1,
+        last_detected_at=now,
+        algorithm_source="admin",
         remark=remark,
     )
     db.session.add(event)

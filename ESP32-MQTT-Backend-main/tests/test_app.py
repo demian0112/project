@@ -14,6 +14,8 @@ from app.models import (
     WxSubscription,
     utc_now,
 )
+from app.services.fall_alert_service import FallAlertService
+from app.services.fall_algorithm_client import AlgorithmAlert
 from app.services.csi_payload_service import BATCH_HEADER, FRAME_HEADER
 
 
@@ -1349,7 +1351,7 @@ def test_csi_seq_reset_keeps_session_and_clears_algorithm_window(app):
         assert device.detection_state == "running"
         assert device.current_session == "sess-reset"
         assert device.network_quality == "fair"
-        assert len(coordinator._csi_windows[(device.device_name, "sess-reset")]) == 1
+        assert db.session.scalar(db.select(FallEvent)) is None
 
 
 def test_single_csi_parse_error_does_not_stop_running_device(app):
@@ -1480,9 +1482,6 @@ def test_mqtt_state_csi_fall_event_and_offline_scan(client, app):
     token = login_data["access_token"]
     user_id = login_data["user"]["id"]
     app.config["CSI_WINDOW_SIZE"] = 2
-    app.config["FALL_PREDICTOR"] = (
-        lambda device_name, session, window: 1
-    )
     published = []
     app.config["MQTT_CONTROL_PUBLISHER"] = (
         lambda **message: published.append(message)
@@ -1556,11 +1555,25 @@ def test_mqtt_state_csi_fall_event_and_offline_scan(client, app):
             csi_payload("sess-test-001", 2, 3),
         )
 
+        assert db.session.scalar(db.select(FallEvent)) is None
+        FallAlertService(app).handle_algorithm_alert(
+            device_name="fall-room-01",
+            session="sess-test-001",
+            network_quality=device.network_quality,
+            alert=AlgorithmAlert(
+                confidence=0.92,
+                algorithm_class="fall",
+                timestamp="2026-07-07 15:30:00",
+            ),
+        )
+
         event = db.session.scalar(db.select(FallEvent))
         assert event is not None
         assert event.status == "pending"
         assert event.notified is True
         assert event.network_quality == "good"
+        assert event.algorithm_source == "docker"
+        assert event.alert_count == 1
 
     events = client.get(
         "/api/v1/fall-events?limit=20",
