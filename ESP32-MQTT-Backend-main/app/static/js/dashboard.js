@@ -68,6 +68,14 @@ const elements = {
   deviceRemark: document.querySelector("#device-remark"),
   deviceTopicPreview: document.querySelector("#device-topic-preview"),
   deviceLiveSummary: document.querySelector("#device-live-summary"),
+  algoStepSize: document.querySelector("#algo-step-size"),
+  algoBufferSize: document.querySelector("#algo-buffer-size"),
+  algoConfidenceThreshold: document.querySelector("#algo-confidence-threshold"),
+  algoEnableSobel: document.querySelector("#algo-enable-sobel"),
+  algoConsecutiveRequired: document.querySelector("#algo-consecutive-required"),
+  algoConfirmationWindow: document.querySelector("#algo-confirmation-window"),
+  algoCooldownSeconds: document.querySelector("#algo-cooldown-seconds"),
+  algoMaxTimeInterval: document.querySelector("#algo-max-time-interval"),
   toast: document.querySelector("#toast"),
   toastTitle: document.querySelector("#toast-title"),
   toastMessage: document.querySelector("#toast-message"),
@@ -102,6 +110,17 @@ const labels = {
     confirmed: "已确认",
     ignored: "已忽略",
   },
+};
+
+const defaultAlgorithmConfig = {
+  step_size: 30,
+  buffer_size: 500,
+  fall_confidence_threshold: 0.8,
+  enable_sobel: true,
+  consecutive_required: 2,
+  confirmation_window: 4.0,
+  cooldown_seconds: 10.0,
+  max_time_interval: 1.5,
 };
 
 let toastTimer;
@@ -740,6 +759,31 @@ function updateTopicPreview() {
     `csi/v1/devices/${deviceName}/up/#`;
 }
 
+function algorithmConfigFromForm() {
+  return {
+    step_size: Number(elements.algoStepSize.value),
+    buffer_size: Number(elements.algoBufferSize.value),
+    fall_confidence_threshold: Number(elements.algoConfidenceThreshold.value),
+    enable_sobel: elements.algoEnableSobel.checked,
+    consecutive_required: Number(elements.algoConsecutiveRequired.value),
+    confirmation_window: Number(elements.algoConfirmationWindow.value),
+    cooldown_seconds: Number(elements.algoCooldownSeconds.value),
+    max_time_interval: Number(elements.algoMaxTimeInterval.value),
+  };
+}
+
+function fillAlgorithmConfig(config = {}) {
+  const values = { ...defaultAlgorithmConfig, ...config };
+  elements.algoStepSize.value = values.step_size;
+  elements.algoBufferSize.value = values.buffer_size;
+  elements.algoConfidenceThreshold.value = values.fall_confidence_threshold;
+  elements.algoEnableSobel.checked = Boolean(values.enable_sobel);
+  elements.algoConsecutiveRequired.value = values.consecutive_required;
+  elements.algoConfirmationWindow.value = values.confirmation_window;
+  elements.algoCooldownSeconds.value = values.cooldown_seconds;
+  elements.algoMaxTimeInterval.value = values.max_time_interval;
+}
+
 function openDeviceModal(deviceId = null) {
   if (!state.users.length) {
     showToast(
@@ -761,6 +805,7 @@ function openDeviceModal(deviceId = null) {
   elements.deviceStatus.value = device?.status || "enabled";
   elements.deviceLocation.value = device?.location || "";
   elements.deviceRemark.value = device?.remark || "";
+  fillAlgorithmConfig(device?.algorithm_config);
   elements.deviceModalTitle.textContent = device ? "编辑设备" : "登记设备";
   elements.deviceLiveSummary.hidden = !device;
   if (device) {
@@ -899,9 +944,10 @@ elements.deviceForm.addEventListener("submit", async (event) => {
     status: elements.deviceStatus.value,
     location: elements.deviceLocation.value.trim(),
     remark: elements.deviceRemark.value.trim(),
+    algorithm_config: algorithmConfigFromForm(),
   };
   try {
-    await apiRequest(
+    const saved = await apiRequest(
       deviceId ? `/api/devices/${deviceId}` : "/api/devices",
       {
         method: deviceId ? "PUT" : "POST",
@@ -910,6 +956,15 @@ elements.deviceForm.addEventListener("submit", async (event) => {
     );
     closeModal(elements.deviceModal);
     await loadDashboard({ silent: true });
+    const sync = saved.runtime_sync || {};
+    if (sync.ok === false) {
+      showToast(
+        "设备资料已保存",
+        `运行中算法同步失败：${sync.error || "请检查 Docker 服务"}`,
+        "error",
+      );
+      return;
+    }
     showToast(deviceId ? "设备资料已更新" : "设备登记成功");
   } catch (error) {
     showToast("保存失败", error.message, "error");

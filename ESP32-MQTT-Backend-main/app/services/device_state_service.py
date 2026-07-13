@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,18 +11,17 @@ from sqlalchemy.orm import selectinload
 from ..extensions import db
 from ..models import (
     Device,
-    FallEvent,
     User,
     isoformat,
     public_fault_payload,
     utc_now,
 )
 from ..mqtt.client import generate_message_id
+from .csi_algorithm_stream_service import CsiAlgorithmStreamService
 from .csi_feature_service import raw_iq_to_amplitude
 from .csi_live_buffer_service import csi_live_buffer_service
 from .csi_payload_service import CsiPayloadError, decode_csi_payload
 from .csi_quality_service import CsiQualityTracker
-from .fall_detect_service import predict_fall
 from .mqtt_service import MqttManager, MqttUnavailable
 from .websocket_service import websocket_hub
 from .wechat_notify_service import (
@@ -81,14 +79,8 @@ class DeviceCoordinator:
             ),
         )
         self.mqtt = MqttManager(app, self.handle_mqtt_payload)
-        self._csi_windows: dict[
-            tuple[str, str], deque[dict[str, Any]]
-        ] = defaultdict(
-            lambda: deque(
-                maxlen=max(20, int(app.config["CSI_WINDOW_SIZE"]))
-            )
-        )
-        self._fall_emitted: set[tuple[str, str]] = set()
+        self.algorithm_stream = CsiAlgorithmStreamService(app)
+        app.extensions["fall_algorithm_stream_service"] = self.algorithm_stream
         self._fault_stop_requested: set[tuple[str, str]] = set()
         self._fault_reset_pending: dict[str, tuple[float, str | None]] = {}
         self._last_fault_event: dict[tuple[str, str], float] = {}
@@ -839,10 +831,7 @@ class DeviceCoordinator:
             device.last_online_at = now
         self._parse_error_count.pop((device.device_name, session), None)
 
-        key = (device.device_name, session)
-        window = self._csi_windows[key]
         if quality_result.seq_reset:
-            window.clear()
             logger.info(
                 "CSI_SEQ_RESET device=%s session=%s prev_seq=%s new_seq0=%s "
                 "gap=%s action=treat_as_hardware_restart",
@@ -852,35 +841,13 @@ class DeviceCoordinator:
                 quality_result.new_seq0,
                 quality_result.gap_seconds,
             )
-        window.append(batch.to_algorithm_input())
-        fall_event = None
-        window_size = int(self.app.config["CSI_WINDOW_SIZE"])
-        window_frame_count = sum(
-            len(item.get("frames", [])) for item in window
-        )
-        if (
-            window_frame_count >= window_size
-            and quality != "unknown"
-            and key not in self._fall_emitted
-        ):
-            predictor = self.app.config.get("FALL_PREDICTOR", predict_fall)
-            if int(predictor(device.device_name, session, list(window))) == 1:
-                fall_event = FallEvent(
-                    user_id=device.owner_user_id,
-                    device_id=device.id,
-                    device_name=device.device_name,
-                    session=session,
-                    result=1,
-                    network_quality=quality,
-                    occurred_at=now,
-                    status="pending",
-                    notified=True,
-                    notified_at=now,
-                )
-                db.session.add(fall_event)
-                self._fall_emitted.add(key)
 
         db.session.commit()
+        self.algorithm_stream.submit_batch(
+            device=device,
+            batch=batch,
+            network_quality=quality,
+        )
 
         if (
             old_runtime_state != device.runtime_state
@@ -909,21 +876,6 @@ class DeviceCoordinator:
                     "session": session,
                     "network_quality": quality,
                     "last_csi_at": isoformat(now),
-                },
-            )
-
-        if fall_event is not None:
-            websocket_hub.push_to_user(
-                device.owner_user_id,
-                "detection.fall-result",
-                device.device_name,
-                {
-                    "fall_event_id": fall_event.id,
-                    "session": session,
-                    "result": 1,
-                    "fall_detected": True,
-                    "network_quality": quality,
-                    "occurred_at": isoformat(now),
                 },
             )
 
@@ -1492,12 +1444,8 @@ class DeviceCoordinator:
     ) -> None:
         self.quality.clear(device_name, session)
         csi_live_buffer_service.clear_session(device_name, session)
+        self.algorithm_stream.stop_stream(device_name, session)
         if session is None:
-            for key in [
-                key for key in self._csi_windows if key[0] == device_name
-            ]:
-                self._csi_windows.pop(key, None)
-                self._fall_emitted.discard(key)
             for key in [
                 key for key in self._parse_error_count if key[0] == device_name
             ]:
@@ -1507,10 +1455,8 @@ class DeviceCoordinator:
             ]:
                 self._last_timeout_log.pop(key, None)
             return
-        key = (device_name, session)
-        self._csi_windows.pop(key, None)
-        self._fall_emitted.discard(key)
-        self._parse_error_count.pop(key, None)
+        session_key = (device_name, session)
+        self._parse_error_count.pop(session_key, None)
         for timeout_key in [
             timeout_key
             for timeout_key in self._last_timeout_log
